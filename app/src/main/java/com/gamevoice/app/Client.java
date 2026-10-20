@@ -32,7 +32,7 @@ public class Client {
         if (svc != null) return;
         Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                 new ComponentName(ctx.getPackageName(), InjectService.class.getName()))
-                .daemon(false).processNameSuffix("inject").version(1);
+                .daemon(false).processNameSuffix("inject").version(2); // bumped: the AIDL play() signature changed
         Shizuku.bindUserService(args, conn);
     }
 
@@ -44,7 +44,7 @@ public class Client {
         ParcelFileDescriptor pfd = null;
         try {
             pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
-            r = s.play(pfd);
+            r = s.play(pfd, SoundStore.sendVolume(ctx, SoundStore.folderOf(ctx, f)));
         } catch (Throwable e) { return "ERR: " + e; }
         finally {
             // The remote side got its own duplicate; close ours so descriptors don't leak on every tap.

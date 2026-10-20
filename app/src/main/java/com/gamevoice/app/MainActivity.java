@@ -256,7 +256,8 @@ public class MainActivity extends Activity {
         folderBar.removeAllViews();
         folderBar.addView(folderTab("📂", "সব", curFolder.isEmpty(), v -> selectFolder(SoundStore.ALL), null));
         for (SoundStore.Folder f : SoundStore.folders(this)) {
-            folderBar.addView(folderTab(f.emoji, f.name, f.id.equals(curFolder),
+            int fv = SoundStore.sendVolume(this, f.id); // show "· 50%" on folders that are turned down
+            folderBar.addView(folderTab(f.emoji, f.name + (fv < 100 ? " · " + fv + "%" : ""), f.id.equals(curFolder),
                     v -> selectFolder(f.id), v -> folderDialog(f)));
         }
         TextView add = Ui.pill(this, "＋ নতুন ফোল্ডার", Ui.GREEN, 0xFF06210F, 13);
@@ -321,6 +322,28 @@ public class MainActivity extends Activity {
         custom.setInputType(InputType.TYPE_CLASS_TEXT);
         box.addView(custom);
 
+        // How loud the person on the other end hears this folder's voices.
+        final int[] vol = {fold == null ? 100 : SoundStore.sendVolume(this, fold.id)};
+        final TextView volLab = text("", 13, Ui.TEXT, true);
+        volLab.setPadding(0, dp(16), 0, dp(2));
+        box.addView(volLab);
+        TextView volHint = text("অপর প্রান্তের মানুষ এই ফোল্ডারের ভয়েস কত জোরে শুনবে। আপনার নিজের শোনা আলাদা (উপরের “নিজে শুনুন”)।", 11, Ui.MUTED, false);
+        box.addView(volHint);
+        final SeekBar sb = new SeekBar(this);
+        sb.setMax(20);       // 5% steps
+        sb.setMin(1);        // 5% .. 100%
+        sb.setProgress(Math.max(1, Math.round(vol[0] / 5f)));
+        volLab.setText("🔊 অপর প্রান্তে: " + (sb.getProgress() * 5) + "%");
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean user) {
+                vol[0] = p * 5;
+                volLab.setText("🔊 অপর প্রান্তে: " + vol[0] + "%");
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {}
+        });
+        box.addView(sb, new LinearLayout.LayoutParams(-1, -2));
+
         ScrollView sv = new ScrollView(this);
         sv.addView(box);
 
@@ -335,8 +358,10 @@ public class MainActivity extends Activity {
                         SoundStore.Folder nf = SoundStore.createFolder(this, nm, emoji);
                         curFolder = nf.id;
                         SoundStore.setSelected(this, nf.id);
+                        SoundStore.setSendVolume(this, nf.id, vol[0]);
                     } else {
                         SoundStore.updateFolder(this, fold.id, nm, emoji);
+                        SoundStore.setSendVolume(this, fold.id, vol[0]);
                     }
                     refresh();
                 })

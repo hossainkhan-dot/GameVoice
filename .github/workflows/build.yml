@@ -15,6 +15,10 @@ jobs:
         with:
           gradle-version: '8.7'
       - run: gradle assembleDebug --stacktrace
+      - name: Show APK signing certificate (must be identical on every build)
+        run: |
+          APKSIGNER=$(ls $ANDROID_HOME/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/*.apk | grep -i "SHA-256" || true
       - uses: actions/upload-artifact@v4
         with:
           name: GameVoice-debug

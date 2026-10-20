@@ -158,8 +158,20 @@ public class SoundStore {
         for (Map.Entry<String, ?> en : p.getAll().entrySet()) {
             if (en.getKey().startsWith("folder:") && id.equals(en.getValue())) e.remove(en.getKey());
         }
+        e.remove("vol:" + id);
         e.apply();
         if (id.equals(p.getString("sel", ALL))) setSelected(c, ALL);
+    }
+
+    /** How loud (0..100 %) the OTHER side hears voices of this folder. Voices outside folders: 100. */
+    public static int sendVolume(Context c, String folderId) {
+        if (folderId == null || folderId.isEmpty()) return 100;
+        return Math.max(0, Math.min(100, prefs(c).getInt("vol:" + folderId, 100)));
+    }
+
+    public static void setSendVolume(Context c, String folderId, int pct) {
+        if (folderId == null || folderId.isEmpty()) return;
+        prefs(c).edit().putInt("vol:" + folderId, Math.max(0, Math.min(100, pct))).apply();
     }
 
     /** Folder id a voice lives in, or "" when it is not in any folder. */

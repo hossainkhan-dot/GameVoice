@@ -102,7 +102,7 @@ public class InjectService extends IUserService.Stub {
      * hundreds of milliseconds (or seconds); doing it inside this Binder call froze
      * the overlay and could trigger Android's "Wait / Close app" ANR dialog.
      */
-    @Override public String play(ParcelFileDescriptor pfd) {
+    @Override public String play(ParcelFileDescriptor pfd, final int volumePct) {
         if (pfd == null) return "ERR: audio file is unavailable";
         final int request = ++generation;
         cancel = false;
@@ -115,6 +115,11 @@ public class InjectService extends IUserService.Stub {
                 if (request != generation || cancel) return;
                 short[] pcm = decode(owned.getFileDescriptor());
                 if (request != generation || cancel || pcm.length == 0) return;
+                // Per-folder "how loud the other side hears it" (linear gain, 0..100 %).
+                if (volumePct < 100) {
+                    float gain = Math.max(0, volumePct) / 100f;
+                    for (int i = 0; i < pcm.length; i++) pcm[i] = (short) (pcm[i] * gain);
+                }
                 int off = 0;
                 while (request == generation && !cancel && off < pcm.length) {
                     int n = Math.min(1920, pcm.length - off);
