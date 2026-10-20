@@ -15,6 +15,8 @@ public class InjectService extends IUserService.Stub {
     private AudioTrack track;
     private volatile Thread player;
     private volatile boolean cancel;
+    private volatile int generation;
+    private volatile String lastError = "";
 
     public InjectService() {}
 
@@ -89,36 +91,51 @@ public class InjectService extends IUserService.Stub {
 
     @Override public void stop() {
         cancel = true;
+        generation++;
         Thread t = player;
         if (t != null) t.interrupt();
+        try { if (track != null) track.flush(); } catch (Throwable ignored) {}
     }
 
+    /**
+     * Return immediately to the UI/Binder caller. Decoding compressed audio can take
+     * hundreds of milliseconds (or seconds); doing it inside this Binder call froze
+     * the overlay and could trigger Android's "Wait / Close app" ANR dialog.
+     */
     @Override public String play(ParcelFileDescriptor pfd) {
-        try {
-            init();
-            stop();
-            final short[] pcm = decode(pfd.getFileDescriptor());
-            pfd.close();
-            cancel = false;
-            Thread t = new Thread(() -> {
+        if (pfd == null) return "ERR: audio file is unavailable";
+        final int request = ++generation;
+        cancel = false;
+        lastError = "";
+        Thread old = player;
+        if (old != null) old.interrupt();
+        Thread t = new Thread(() -> {
+            try (ParcelFileDescriptor owned = pfd) {
+                init();
+                if (request != generation || cancel) return;
+                short[] pcm = decode(owned.getFileDescriptor());
+                if (request != generation || cancel || pcm.length == 0) return;
                 int off = 0;
-                while (!cancel && off < pcm.length) {
+                while (request == generation && !cancel && off < pcm.length) {
                     int n = Math.min(1920, pcm.length - off);
-                    track.write(pcm, off, n);
-                    off += n;
+                    int written = track.write(pcm, off, n, AudioTrack.WRITE_BLOCKING);
+                    if (written < 0) throw new IllegalStateException("AudioTrack.write=" + written);
+                    if (written == 0) Thread.yield(); else off += written;
                 }
-                if (cancel) track.flush();
-            }, "gv-play");
-            player = t;
-            t.start();
-            return "ok";
-        } catch (Throwable e) {
-            Throwable c = e.getCause() != null ? e.getCause() : e;
-            StringBuilder sb = new StringBuilder("ERR: " + c);
-            StackTraceElement[] st = c.getStackTrace();
-            for (int i = 0; i < Math.min(3, st.length); i++) sb.append("\n  at ").append(st[i]);
-            return sb.toString();
-        }
+                if (request == generation && cancel) {
+                    try { track.flush(); } catch (Throwable ignored) {}
+                }
+            } catch (Throwable e) {
+                if (request == generation && !cancel) {
+                    Throwable c = e.getCause() != null ? e.getCause() : e;
+                    lastError = "ERR: " + c;
+                }
+            }
+        }, "gv-audio-" + request);
+        t.setPriority(Thread.NORM_PRIORITY);
+        player = t;
+        t.start();
+        return "ok";
     }
 
     private short[] decode(FileDescriptor fd) throws Exception {
@@ -173,8 +190,7 @@ public class InjectService extends IUserService.Stub {
                 ch = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
             }
         }
-        c.stop(); c.release(); ex.release();
-        int frames = len / ch;
+        try { c.stop(); } catch (Throwable ignored) {}\n        c.release(); ex.release();\n        int frames = len / ch;
         short[] mono = new short[frames];
         for (int i = 0; i < frames; i++) {
             int s = 0;

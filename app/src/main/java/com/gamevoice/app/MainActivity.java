@@ -289,7 +289,17 @@ public class MainActivity extends Activity {
                 .setNegativeButton("বাতিল", null).show();
     }
 
-    @Override protected void onResume() { super.onResume(); refresh(); }
+    @Override protected void onResume() {
+        super.onResume();
+        // Recover the Shizuku user-service binding when returning to the app.
+        try {
+            if (Client.svc == null && Shizuku.pingBinder()
+                    && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                Client.bind(getApplicationContext());
+            }
+        } catch (Throwable ignored) {}
+        refresh();
+    }
 
     @Override protected void onActivityResult(int rc, int res, Intent d) {
         super.onActivityResult(rc, res, d);
