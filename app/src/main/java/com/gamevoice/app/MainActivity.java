@@ -381,7 +381,11 @@ public class MainActivity extends Activity {
 
         TextView g = Ui.pill(this, Ui.glyph(label), Ui.colorFor(f.getName()), 0xFFFFFFFF, 17);
         g.setBackground(Ui.oval(Ui.colorFor(f.getName())));
-        r.addView(g, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        final boolean fav = SoundStore.isFav(this, f);
+        FrameLayout gf = new FrameLayout(this);
+        gf.addView(g, new FrameLayout.LayoutParams(-1, -1));
+        if (fav) gf.addView(Ui.star(this), new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END));
+        r.addView(gf, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
         TextView n = text(label, 15, Ui.TEXT, false);
         n.setMaxLines(1);
@@ -399,6 +403,9 @@ public class MainActivity extends Activity {
         nlp.leftMargin = dp(12);
         r.addView(txt, nlp);
 
+        TextView st = Ui.pill(this, fav ? "★" : "☆", 0xFF2A3050, fav ? Ui.GOLD : Ui.MUTED, 15);
+        st.setOnClickListener(v -> { SoundStore.setFav(this, f, !fav); refresh(); });
+        r.addView(st, small());
         TextView mv = Ui.pill(this, "📁", 0xFF2A3050, Ui.TEXT, 14);
         mv.setOnClickListener(v -> moveDialog(f));
         r.addView(mv, small());
@@ -420,8 +427,8 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout.LayoutParams small() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(36), dp(36));
-        p.leftMargin = dp(6);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(32), dp(32));
+        p.leftMargin = dp(4);
         return p;
     }
 

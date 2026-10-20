@@ -502,6 +502,20 @@ public class FloatingService extends Service {
         elp.topMargin = Ui.dp(this, 8);
         panel.addView(et, elp);
 
+        // Favourite toggle: favourites sit at the top of their folder with a tiny star.
+        final boolean[] fav = {SoundStore.isFav(this, f)};
+        final TextView favBtn = Ui.pill(this, "", 0, 0, 12);
+        final Runnable styleFav = () -> {
+            favBtn.setText(fav[0] ? "★ ফেভারিট (উপরে থাকবে)" : "☆ ফেভারিটে রাখুন");
+            favBtn.setTextColor(fav[0] ? Ui.GOLD : Ui.MUTED);
+            favBtn.setBackground(Ui.round(fav[0] ? 0xFF3A3320 : 0xFF252B45, this, 100));
+        };
+        favBtn.setOnClickListener(v -> { fav[0] = !fav[0]; styleFav.run(); });
+        styleFav.run();
+        LinearLayout.LayoutParams favlp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 30));
+        favlp.topMargin = Ui.dp(this, 8);
+        panel.addView(favBtn, favlp);
+
         TextView lab = new TextView(this);
         lab.setText("কোন ফোল্ডারে থাকবে");
         lab.setTextColor(Ui.MUTED);
@@ -550,6 +564,7 @@ public class FloatingService extends Service {
         save.setOnClickListener(v -> {
             SoundStore.setLabel(this, f, et.getText().toString());
             SoundStore.setFolder(this, f, sel[0]);
+            SoundStore.setFav(this, f, fav[0]);
             closeEditor();
         });
         et.setOnEditorActionListener((v, id, ev) -> { save.performClick(); return true; });
@@ -636,7 +651,15 @@ public class FloatingService extends Service {
         circle.setIncludeFontPadding(false);
         circle.setBackground(Ui.oval(Ui.colorFor(f.getName())));
         circle.setElevation(Ui.dp(this, 2));
-        cell.addView(circle, new LinearLayout.LayoutParams(d, d));
+        FrameLayout badge = new FrameLayout(this);
+        badge.addView(circle, new FrameLayout.LayoutParams(-1, -1));
+        if (SoundStore.isFav(this, f)) {
+            FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
+            slp.topMargin = Ui.dp(this, 1);
+            slp.rightMargin = Ui.dp(this, 2);
+            badge.addView(Ui.star(this), slp);
+        }
+        cell.addView(badge, new LinearLayout.LayoutParams(d, d));
 
         TextView name = new TextView(this);
         name.setText(label);

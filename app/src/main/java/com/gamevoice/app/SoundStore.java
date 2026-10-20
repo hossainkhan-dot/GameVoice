@@ -39,7 +39,19 @@ public class SoundStore {
         File[] fs = dir(c).listFiles();
         List<File> l = fs == null ? new ArrayList<>() : new ArrayList<>(Arrays.asList(fs));
         Collections.sort(l);
+        // Favourites first (stable sort keeps the name order inside each group).
+        final SharedPreferences p = prefs(c);
+        Collections.sort(l, (a, b) -> Boolean.compare(
+                p.getBoolean("fav:" + b.getName(), false), p.getBoolean("fav:" + a.getName(), false)));
         return l;
+    }
+
+    public static boolean isFav(Context c, File f) { return prefs(c).getBoolean("fav:" + f.getName(), false); }
+
+    public static void setFav(Context c, File f, boolean on) {
+        SharedPreferences.Editor e = prefs(c).edit();
+        if (on) e.putBoolean("fav:" + f.getName(), true); else e.remove("fav:" + f.getName());
+        e.apply();
     }
 
     /** Voices inside one folder; {@link #ALL} returns everything. */
@@ -69,7 +81,8 @@ public class SoundStore {
 
     public static void delete(Context c, File f) {
         f.delete();
-        prefs(c).edit().remove("name:" + f.getName()).remove("folder:" + f.getName()).apply();
+        prefs(c).edit().remove("name:" + f.getName()).remove("folder:" + f.getName())
+                .remove("fav:" + f.getName()).apply();
     }
 
     public static int getMonitor(Context c) { return prefs(c).getInt("monitor", 30); }

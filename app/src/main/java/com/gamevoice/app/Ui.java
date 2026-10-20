@@ -61,6 +61,19 @@ public class Ui {
         return t;
     }
 
+    public static final int GOLD = 0xFFFFC83D;
+
+    /** Tiny gold star badge for favourite voices. */
+    public static TextView star(Context c) {
+        TextView t = new TextView(c);
+        t.setText("★");
+        t.setTextSize(10);
+        t.setTextColor(GOLD);
+        t.setIncludeFontPadding(false);
+        t.setShadowLayer(dp(c, 2), 0, 0, 0xFF000000);
+        return t;
+    }
+
     /** First visible character (a whole emoji, even multi-part ones like ❤️ or 👨‍👩‍👧). */
     public static String firstGrapheme(String s) {
         s = s == null ? "" : s.trim();
