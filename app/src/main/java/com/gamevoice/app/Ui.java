@@ -61,11 +61,89 @@ public class Ui {
         return t;
     }
 
+    /** First visible character (a whole emoji, even multi-part ones like ❤️ or 👨‍👩‍👧). */
+    public static String firstGrapheme(String s) {
+        s = s == null ? "" : s.trim();
+        if (s.isEmpty()) return "";
+        try {
+            android.icu.text.BreakIterator it = android.icu.text.BreakIterator.getCharacterInstance();
+            it.setText(s);
+            int end = it.next();
+            if (end > 0) return s.substring(0, end);
+        } catch (Throwable ignored) {}
+        return new String(Character.toChars(s.codePointAt(0)));
+    }
+
     public static String glyph(String label) {
-        String s = label.trim();
-        if (s.isEmpty()) return "♪";
-        int cp = s.codePointAt(0);
-        return new String(Character.toChars(cp)).toUpperCase();
+        String g = firstGrapheme(label);
+        return g.isEmpty() ? "♪" : g.toUpperCase();
+    }
+
+    /** Emoji choices for folder icons. */
+    public static final String[] EMOJIS = {
+            "📁", "😂", "🤣", "😎", "🤡", "👻", "💀", "😈",
+            "🔥", "🎮", "🎤", "🎵", "🔊", "🐔", "🐶", "🐱",
+            "🐸", "🐵", "🦆", "🐷", "🤖", "👽", "💩", "🥶",
+            "😱", "🤪", "😡", "🥵", "🚀", "💥", "🎉", "❤️"};
+
+    /** Folder tab: "emoji name" in a pill. Highlighted when selected. */
+    public static TextView folderChip(Context c, String emoji, String name, boolean on,
+                                      float sp, float padHDp, float padVDp) {
+        TextView t = new TextView(c);
+        t.setText(emoji + " " + name);
+        t.setTextSize(sp);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setSingleLine(true);
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        t.setMaxWidth(dp(c, 130));
+        t.setGravity(Gravity.CENTER);
+        t.setIncludeFontPadding(false);
+        t.setPadding(dp(c, padHDp), dp(c, padVDp), dp(c, padHDp), dp(c, padVDp));
+        styleChip(t, on);
+        return t;
+    }
+
+    public static void styleChip(TextView t, boolean on) {
+        t.setBackground(round(on ? ACCENT : 0xFF252B45, t.getContext(), 100));
+        t.setTextColor(on ? 0xFFFFFFFF : 0xFFB8BFDA);
+    }
+
+    /** Grid of emoji; tap one to select it. */
+    public static class EmojiPicker extends android.widget.LinearLayout {
+        public String value;
+        public Runnable onPick;
+        private final java.util.List<TextView> cells = new java.util.ArrayList<>();
+
+        public EmojiPicker(Context c, String initial, int cols, float cellDp) {
+            super(c);
+            setOrientation(VERTICAL);
+            value = initial;
+            android.widget.LinearLayout row = null;
+            for (int i = 0; i < EMOJIS.length; i++) {
+                if (i % cols == 0) {
+                    row = new android.widget.LinearLayout(c);
+                    row.setOrientation(HORIZONTAL);
+                    addView(row, new LayoutParams(-2, -2));
+                }
+                final String e = EMOJIS[i];
+                TextView t = new TextView(c);
+                t.setText(e);
+                t.setTextSize(20);
+                t.setGravity(Gravity.CENTER);
+                t.setIncludeFontPadding(false);
+                t.setOnClickListener(v -> { value = e; restyle(); if (onPick != null) onPick.run(); });
+                cells.add(t);
+                row.addView(t, new LayoutParams(dp(c, cellDp), dp(c, cellDp)));
+            }
+            restyle();
+        }
+
+        public void restyle() {
+            for (int i = 0; i < cells.size(); i++) {
+                boolean on = EMOJIS[i].equals(value);
+                cells.get(i).setBackground(on ? round(ACCENT, getContext(), 10) : null);
+            }
+        }
     }
 
     /** ScrollView that never grows past maxPx. */

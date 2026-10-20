@@ -1,23 +1,26 @@
 package com.gamevoice.app;
 
-import android.animation.ValueAnimator;
 import android.app.*;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.os.IBinder;
 import android.os.SystemClock;
+import android.text.InputFilter;
 import android.text.InputType;
 import android.view.*;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Tiny floating mic bubble. Tap -> a slim side panel slides out with round sound shortcuts.
- * Long-press a shortcut to rename it.
+ * Tiny floating mic bubble. Drag it ANYWHERE on the screen - it stays exactly where you leave it
+ * (and is remembered). Tap -> a slim panel opens next to it with folder tabs on top and round
+ * sound shortcuts below. Long-press a sound or a folder to edit it.
  */
 public class FloatingService extends Service {
     private static final int COLS = 3;
@@ -26,9 +29,15 @@ public class FloatingService extends Service {
     private Ui.MicView bubble;
     private WindowManager.LayoutParams bp, pp;
     private LinearLayout panel;
-    private boolean open, editing;
+    private Ui.MaxHeightScroll scroller;
+    private HorizontalScrollView folderHs;
+    private int folderScrollX;
+    private boolean open, editing, panelAttached;
     private long outsideAt = -10000;
     private int sw, sh, bsz, pw;
+    private float fx, fy;          // saved bubble position, 0..1 of the free screen area
+    private int slide;             // -1: panel is right of bubble, 1: left of it, 0: above/below
+    private String curFolder = SoundStore.ALL;
     private final TextView[] monPills = new TextView[SoundStore.MONITOR_LEVELS.length];
 
     @Override public IBinder onBind(Intent i) { return null; }
@@ -46,6 +55,8 @@ public class FloatingService extends Service {
         bsz = Ui.dp(this, 34);
         pw = Ui.dp(this, 232);
         readScreen();
+        fx = SoundStore.getBubbleX(this);
+        fy = SoundStore.getBubbleY(this);
 
         bubble = new Ui.MicView(this);
         bp = new WindowManager.LayoutParams(bsz, bsz,
@@ -54,7 +65,7 @@ public class FloatingService extends Service {
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT);
         bp.gravity = Gravity.TOP | Gravity.START;
-        bp.x = 0; bp.y = sh / 3;
+        applyBubblePos();
 
         bubble.setOnTouchListener(new View.OnTouchListener() {
             int sx, sy; float tx, ty; boolean moved; long downAt;
@@ -69,15 +80,20 @@ public class FloatingService extends Service {
                         if (!moved && Math.abs(dx) < Ui.dp(FloatingService.this, 6)
                                 && Math.abs(dy) < Ui.dp(FloatingService.this, 6)) return true;
                         if (!moved) { moved = true; if (open) closePanel(); }
-                        bp.x = sx + (int) dx; bp.y = sy + (int) dy;
+                        // Free movement: any point of the screen, no snapping to an edge.
+                        bp.x = clamp(sx + (int) dx, 0, Math.max(0, sw - bsz));
+                        bp.y = clamp(sy + (int) dy, 0, Math.max(0, sh - bsz));
                         wm.updateViewLayout(bubble, bp);
                         return true;
                     }
                     case MotionEvent.ACTION_UP:
-                        if (moved) snapToEdge();
+                        if (moved) savePos();
                         else if (Math.abs(outsideAt - downAt) < 350) { /* this tap just closed the panel */ }
                         else if (open) closePanel();
                         else openPanel();
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        if (moved) savePos();
                         return true;
                 }
                 return false;
@@ -86,23 +102,33 @@ public class FloatingService extends Service {
         wm.addView(bubble, bp);
     }
 
+    private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(v, hi)); }
+
     private void readScreen() {
         Rect r = wm.getCurrentWindowMetrics().getBounds();
         sw = r.width(); sh = r.height();
     }
 
-    private void snapToEdge() {
+    /** Turn the saved fractions into pixels for the current screen size. */
+    private void applyBubblePos() {
+        bp.x = clamp(Math.round(fx * Math.max(0, sw - bsz)), 0, Math.max(0, sw - bsz));
+        bp.y = clamp(Math.round(fy * Math.max(0, sh - bsz)), 0, Math.max(0, sh - bsz));
+    }
+
+    /** Remember where the bubble was left, so it is pinned there next time too. */
+    private void savePos() {
+        fx = bp.x / (float) Math.max(1, sw - bsz);
+        fy = bp.y / (float) Math.max(1, sh - bsz);
+        SoundStore.setBubblePos(this, fx, fy);
+    }
+
+    @Override public void onConfigurationChanged(Configuration c) {
+        super.onConfigurationChanged(c);
+        // Screen rotated (games are often landscape): keep the bubble at the same relative spot.
+        if (open) closePanel();
         readScreen();
-        final int from = bp.x;
-        final int to = (bp.x + bsz / 2 < sw / 2) ? 0 : sw - bsz;
-        bp.y = Math.max(Ui.dp(this, 24), Math.min(bp.y, sh - bsz - Ui.dp(this, 24)));
-        ValueAnimator a = ValueAnimator.ofInt(from, to);
-        a.setDuration(160);
-        a.addUpdateListener(v -> {
-            bp.x = (Integer) v.getAnimatedValue();
-            try { wm.updateViewLayout(bubble, bp); } catch (Throwable ignored) {}
-        });
-        a.start();
+        applyBubblePos();
+        try { wm.updateViewLayout(bubble, bp); } catch (Throwable ignored) {}
     }
 
     // ---------------------------------------------------------------- panel
@@ -111,15 +137,14 @@ public class FloatingService extends Service {
         if (open) return;
         readScreen();
         editing = false;
+        curFolder = SoundStore.selected(this);
         panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setBackground(Ui.round(Ui.PANEL, this, 20));
         int pad = Ui.dp(this, 10);
         panel.setPadding(pad, pad, pad, pad);
         panel.setElevation(Ui.dp(this, 8));
-        render();
 
-        boolean left = bp.x + bsz / 2 < sw / 2;
         pp = new WindowManager.LayoutParams(pw, WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -127,11 +152,8 @@ public class FloatingService extends Service {
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT);
         pp.gravity = Gravity.TOP | Gravity.START;
-        pp.x = left ? bp.x + bsz + Ui.dp(this, 6) : bp.x - Ui.dp(this, 6) - pw;
-        panel.measure(View.MeasureSpec.makeMeasureSpec(pw, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(sh, View.MeasureSpec.AT_MOST));
-        int ph = panel.getMeasuredHeight();
-        pp.y = Math.max(Ui.dp(this, 24), Math.min(bp.y, sh - ph - Ui.dp(this, 24)));
+        render();
+        layoutPanel();
 
         panel.setOnTouchListener((v, e) -> {
             if (e.getAction() == MotionEvent.ACTION_OUTSIDE && !editing) {
@@ -142,8 +164,9 @@ public class FloatingService extends Service {
         });
 
         panel.setAlpha(0f);
-        panel.setTranslationX(left ? -pw / 2f : pw / 2f);
+        panel.setTranslationX(slide * pw / 2f);
         wm.addView(panel, pp);
+        panelAttached = true;
         panel.animate().alpha(1f).translationX(0f).setDuration(180).start();
         open = true;
         bubble.setActive(true);
@@ -152,24 +175,82 @@ public class FloatingService extends Service {
     private void closePanel() {
         if (!open) return;
         open = false;
+        panelAttached = false;
         bubble.setActive(false);
         hideKeyboard();
         final View p = panel;
         panel = null;
-        boolean left = pp.x > bp.x;
-        p.animate().alpha(0f).translationX(left ? -pw / 3f : pw / 3f).setDuration(140)
+        scroller = null;
+        folderHs = null;
+        p.animate().alpha(0f).translationX(slide * pw / 3f).setDuration(140)
                 .withEndAction(() -> { try { wm.removeView(p); } catch (Throwable ignored) {} }).start();
     }
 
+    /**
+     * Sizes and places the panel next to the bubble wherever it sits on the screen:
+     * right of it, else left of it, else (narrow screens) below/above it. Always kept on-screen.
+     */
+    private void layoutPanel() {
+        if (panel == null) return;
+        readScreen();
+        int margin = Ui.dp(this, 24), gap = Ui.dp(this, 6);
+        int wSpec = View.MeasureSpec.makeMeasureSpec(pw, View.MeasureSpec.EXACTLY);
+        int hSpec = View.MeasureSpec.makeMeasureSpec(sh, View.MeasureSpec.AT_MOST);
+        panel.measure(wSpec, hSpec);
+        int ph = panel.getMeasuredHeight();
+        int avail = sh - 2 * margin;
+        if (ph > avail && scroller != null) {
+            // Short (landscape) screen: let only the sound list shrink and scroll.
+            scroller.maxPx = Math.max(Ui.dp(this, 60), scroller.getMeasuredHeight() - (ph - avail));
+            panel.measure(wSpec, hSpec);
+            ph = panel.getMeasuredHeight();
+        }
+
+        boolean preferRight = bp.x + bsz / 2 < sw / 2;
+        int rightX = bp.x + bsz + gap, leftX = bp.x - gap - pw;
+        boolean rightOk = rightX + pw <= sw, leftOk = leftX >= 0;
+        int mode; // 0 = right of bubble, 1 = left of bubble, 2 = above/below
+        if (preferRight && rightOk) mode = 0;
+        else if (!preferRight && leftOk) mode = 1;
+        else if (rightOk) mode = 0;
+        else if (leftOk) mode = 1;
+        else mode = 2;
+
+        if (mode == 0) { pp.x = rightX; slide = -1; }
+        else if (mode == 1) { pp.x = leftX; slide = 1; }
+        else { pp.x = clamp(bp.x + bsz / 2 - pw / 2, 0, Math.max(0, sw - pw)); slide = 0; }
+
+        if (mode != 2) {
+            pp.y = clamp(bp.y, margin, Math.max(margin, sh - ph - margin));
+        } else {
+            int below = bp.y + bsz + gap;
+            pp.y = (below + ph <= sh - margin) ? below : Math.max(margin, bp.y - gap - ph);
+        }
+    }
+
+    /** Re-measure/re-place after the content changed, and push it to the window. */
+    private void applyPanel() {
+        if (panel == null) return;
+        layoutPanel();
+        if (panelAttached) {
+            try { wm.updateViewLayout(panel, pp); } catch (Throwable ignored) {}
+        }
+    }
+
+    private void refreshPanel() {
+        if (panel == null) return;
+        render();
+        applyPanel();
+    }
+
     private void setFocusable(boolean on) {
-        if (pp == null || panel == null) return;
+        if (pp == null) return;
         if (on) {
             pp.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             pp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;
         } else {
             pp.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
         }
-        wm.updateViewLayout(panel, pp);
     }
 
     private void hideKeyboard() {
@@ -184,20 +265,23 @@ public class FloatingService extends Service {
         panel.removeAllViews();
         panel.addView(header());
         panel.addView(monitorRow());
+        panel.addView(folderBar());
 
-        List<File> files = SoundStore.list(this);
-        Ui.MaxHeightScroll sv = new Ui.MaxHeightScroll(this);
-        sv.maxPx = (int) (sh * 0.5f);
+        List<File> files = SoundStore.list(this, curFolder);
+        scroller = new Ui.MaxHeightScroll(this);
+        scroller.maxPx = (int) (sh * 0.5f);
         LinearLayout grid = new LinearLayout(this);
         grid.setOrientation(LinearLayout.VERTICAL);
-        sv.addView(grid);
+        scroller.addView(grid);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
         slp.topMargin = Ui.dp(this, 8);
-        panel.addView(sv, slp);
+        panel.addView(scroller, slp);
 
         if (files.isEmpty()) {
             TextView t = new TextView(this);
-            t.setText("কোনো ভয়েস নেই।\nঅ্যাপ খুলে ভয়েস যোগ করুন।");
+            t.setText(curFolder.isEmpty()
+                    ? "কোনো ভয়েস নেই।\nঅ্যাপ খুলে ভয়েস যোগ করুন।"
+                    : "এই ফোল্ডারে কোনো ভয়েস নেই।\nভয়েস চেপে ধরে এখানে সরান,\nঅথবা অ্যাপ থেকে যোগ করুন।");
             t.setTextColor(Ui.MUTED);
             t.setTextSize(12);
             t.setGravity(Gravity.CENTER);
@@ -213,15 +297,13 @@ public class FloatingService extends Service {
             }
             row.addView(chip(files.get(i)), new LinearLayout.LayoutParams(0, -2, 1f));
         }
-        if (!files.isEmpty()) {
-            TextView hint = new TextView(this);
-            hint.setText("চেপে ধরলে নাম বদলানো যায়");
-            hint.setTextColor(Ui.MUTED);
-            hint.setTextSize(9);
-            hint.setGravity(Gravity.CENTER);
-            hint.setPadding(0, Ui.dp(this, 6), 0, 0);
-            panel.addView(hint);
-        }
+        TextView hint = new TextView(this);
+        hint.setText("ভয়েস বা ফোল্ডার চেপে ধরলে এডিট করা যায়");
+        hint.setTextColor(Ui.MUTED);
+        hint.setTextSize(9);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, Ui.dp(this, 6), 0, 0);
+        panel.addView(hint);
     }
 
     private View header() {
@@ -251,6 +333,246 @@ public class FloatingService extends Service {
         h.addView(gear, glp);
         return h;
     }
+
+    // -------------------------------------------------------------- folders
+
+    /** Folder tabs on top of the panel: [📂 সব] [😂 ফানি] ... [＋]. */
+    private View folderBar() {
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        folderHs = hs;
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        hs.addView(row);
+
+        row.addView(tab("📂", "সব", curFolder.isEmpty(), v -> selectFolder(SoundStore.ALL), null));
+        for (SoundStore.Folder f : SoundStore.folders(this)) {
+            row.addView(tab(f.emoji, f.name, f.id.equals(curFolder),
+                    v -> selectFolder(f.id), v -> showFolderEditor(f)));
+        }
+        TextView add = Ui.pill(this, "＋", 0xFF2A3050, Ui.GREEN, 14);
+        add.setOnClickListener(v -> showFolderEditor(null));
+        row.addView(add, new LinearLayout.LayoutParams(Ui.dp(this, 30), Ui.dp(this, 28)));
+
+        final int keep = folderScrollX;
+        hs.post(() -> hs.scrollTo(keep, 0));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = Ui.dp(this, 8);
+        hs.setLayoutParams(lp);
+        return hs;
+    }
+
+    private TextView tab(String emoji, String name, boolean on, View.OnClickListener click,
+                         View.OnClickListener longClick) {
+        TextView t = Ui.folderChip(this, emoji, name, on, 11, 10, 6);
+        t.setOnClickListener(click);
+        if (longClick != null) t.setOnLongClickListener(v -> { longClick.onClick(v); return true; });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, Ui.dp(this, 28));
+        lp.rightMargin = Ui.dp(this, 5);
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    private void selectFolder(String id) {
+        if (folderHs != null) folderScrollX = folderHs.getScrollX();
+        curFolder = id;
+        SoundStore.setSelected(this, id);
+        refreshPanel();
+    }
+
+    /** Create (fold == null) or edit a folder: name + emoji icon. Also lets you delete it. */
+    private void showFolderEditor(final SoundStore.Folder fold) {
+        if (panel == null) return;
+        editing = true;
+        scroller = null;
+        panel.removeAllViews();
+        setFocusable(true);
+
+        TextView t = new TextView(this);
+        t.setText(fold == null ? "নতুন ফোল্ডার" : "ফোল্ডার এডিট");
+        t.setTextColor(Ui.TEXT);
+        t.setTextSize(13);
+        t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        panel.addView(t);
+
+        final EditText et = new EditText(this);
+        et.setText(fold == null ? "" : fold.name);
+        et.setSelectAllOnFocus(true);
+        et.setSingleLine(true);
+        et.setFilters(new InputFilter[]{new InputFilter.LengthFilter(24)});
+        et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        et.setTextColor(Ui.TEXT);
+        et.setHintTextColor(Ui.MUTED);
+        et.setHint("ফোল্ডারের নাম, যেমন: ফানি");
+        et.setTextSize(14);
+        et.setBackground(Ui.round(0xFF252B45, this, 12));
+        int p = Ui.dp(this, 10);
+        et.setPadding(p, p, p, p);
+        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(-1, -2);
+        elp.topMargin = Ui.dp(this, 8);
+        panel.addView(et, elp);
+
+        TextView lab = new TextView(this);
+        lab.setText("ইমোজি (ফোল্ডারের আইকন)");
+        lab.setTextColor(Ui.MUTED);
+        lab.setTextSize(10);
+        lab.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 2));
+        panel.addView(lab);
+
+        final Ui.EmojiPicker pick = new Ui.EmojiPicker(this,
+                fold == null ? SoundStore.DEFAULT_EMOJI : fold.emoji, 6, 34);
+        pick.onPick = this::hideKeyboard;
+        Ui.MaxHeightScroll ps = new Ui.MaxHeightScroll(this);
+        ps.maxPx = Ui.dp(this, 104);
+        ps.addView(pick);
+        panel.addView(ps, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, -2);
+        blp.topMargin = Ui.dp(this, 8);
+        panel.addView(btns, blp);
+
+        TextView cancel = Ui.pill(this, "বাতিল", 0xFF2A3050, Ui.TEXT, 12);
+        TextView save = Ui.pill(this, "সেভ", Ui.ACCENT, 0xFFFFFFFF, 12);
+        if (fold != null) {
+            final TextView del = Ui.pill(this, "মুছুন", 0xFF3A2230, Ui.RED, 12);
+            final boolean[] armed = {false};
+            del.setOnClickListener(v -> {
+                if (!armed[0]) { armed[0] = true; del.setText("নিশ্চিত?"); return; }
+                SoundStore.deleteFolder(this, fold.id);
+                curFolder = SoundStore.selected(this);
+                closeEditor();
+            });
+            btns.addView(del, new LinearLayout.LayoutParams(0, Ui.dp(this, 34), 1f));
+        }
+        LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, Ui.dp(this, 34), 1f);
+        LinearLayout.LayoutParams b = new LinearLayout.LayoutParams(0, Ui.dp(this, 34), 1f);
+        a.leftMargin = fold != null ? Ui.dp(this, 6) : 0;
+        b.leftMargin = Ui.dp(this, 6);
+        btns.addView(cancel, a);
+        btns.addView(save, b);
+
+        cancel.setOnClickListener(v -> closeEditor());
+        save.setOnClickListener(v -> {
+            String name = et.getText().toString();
+            if (fold == null) {
+                SoundStore.Folder nf = SoundStore.createFolder(this, name, pick.value);
+                curFolder = nf.id;
+                SoundStore.setSelected(this, nf.id);
+            } else {
+                SoundStore.updateFolder(this, fold.id, name, pick.value);
+            }
+            closeEditor();
+        });
+        et.setOnEditorActionListener((v, id, ev) -> { save.performClick(); return true; });
+        focusField(et);
+        applyPanel();
+    }
+
+    /** Long-press on a sound: rename it and/or move it to another folder. */
+    private void showSoundEditor(final File f) {
+        if (panel == null) return;
+        editing = true;
+        scroller = null;
+        panel.removeAllViews();
+        setFocusable(true);
+
+        TextView t = new TextView(this);
+        t.setText("ভয়েস এডিট");
+        t.setTextColor(Ui.TEXT);
+        t.setTextSize(13);
+        t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        panel.addView(t);
+
+        final EditText et = new EditText(this);
+        et.setText(SoundStore.label(this, f));
+        et.setSelectAllOnFocus(true);
+        et.setSingleLine(true);
+        et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        et.setTextColor(Ui.TEXT);
+        et.setHintTextColor(Ui.MUTED);
+        et.setHint("যেমন: 🔥 হাসি");
+        et.setTextSize(14);
+        et.setBackground(Ui.round(0xFF252B45, this, 12));
+        int p = Ui.dp(this, 10);
+        et.setPadding(p, p, p, p);
+        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(-1, -2);
+        elp.topMargin = Ui.dp(this, 8);
+        panel.addView(et, elp);
+
+        TextView lab = new TextView(this);
+        lab.setText("কোন ফোল্ডারে থাকবে");
+        lab.setTextColor(Ui.MUTED);
+        lab.setTextSize(10);
+        lab.setPadding(0, Ui.dp(this, 8), 0, Ui.dp(this, 2));
+        panel.addView(lab);
+
+        // Folder choices: [কোনোটি না] [😂 ফানি] ...
+        final String[] sel = {SoundStore.folderOf(this, f)};
+        final List<String> ids = new ArrayList<>();
+        final List<TextView> tabs = new ArrayList<>();
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        hs.addView(row);
+        final Runnable restyle = () -> {
+            for (int i = 0; i < tabs.size(); i++) Ui.styleChip(tabs.get(i), ids.get(i).equals(sel[0]));
+        };
+        List<SoundStore.Folder> all = SoundStore.folders(this);
+        for (int i = -1; i < all.size(); i++) {
+            final String id = i < 0 ? "" : all.get(i).id;
+            TextView c = tab(i < 0 ? "📄" : all.get(i).emoji, i < 0 ? "কোনোটি না" : all.get(i).name,
+                    id.equals(sel[0]), v -> { sel[0] = id; restyle.run(); }, null);
+            ids.add(id);
+            tabs.add(c);
+            row.addView(c);
+        }
+        panel.addView(hs, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, -2);
+        blp.topMargin = Ui.dp(this, 8);
+        panel.addView(btns, blp);
+
+        TextView cancel = Ui.pill(this, "বাতিল", 0xFF2A3050, Ui.TEXT, 12);
+        TextView save = Ui.pill(this, "সেভ", Ui.ACCENT, 0xFFFFFFFF, 12);
+        LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, Ui.dp(this, 34), 1f);
+        LinearLayout.LayoutParams b = new LinearLayout.LayoutParams(0, Ui.dp(this, 34), 1f);
+        b.leftMargin = Ui.dp(this, 8);
+        btns.addView(cancel, a);
+        btns.addView(save, b);
+
+        cancel.setOnClickListener(v -> closeEditor());
+        save.setOnClickListener(v -> {
+            SoundStore.setLabel(this, f, et.getText().toString());
+            SoundStore.setFolder(this, f, sel[0]);
+            closeEditor();
+        });
+        et.setOnEditorActionListener((v, id, ev) -> { save.performClick(); return true; });
+        focusField(et);
+        applyPanel();
+    }
+
+    private void focusField(final EditText et) {
+        et.post(() -> {
+            et.requestFocus();
+            getSystemService(InputMethodManager.class).showSoftInput(et, InputMethodManager.SHOW_IMPLICIT);
+        });
+    }
+
+    /** Leave an editor view and go back to the normal panel. */
+    private void closeEditor() {
+        hideKeyboard();
+        editing = false;
+        setFocusable(false);
+        refreshPanel();
+    }
+
+    // -------------------------------------------------------------- sounds
 
     /** "নিজে শুনুন" - choose how loud YOU hear the sound on your own speaker. */
     private View monitorRow() {
@@ -283,6 +605,7 @@ public class FloatingService extends Service {
     private void styleMonitor() {
         int cur = Client.getMonitor();
         for (int i = 0; i < monPills.length; i++) {
+            if (monPills[i] == null) continue;
             boolean on = SoundStore.MONITOR_LEVELS[i] == cur;
             monPills[i].setBackground(Ui.round(on ? Ui.ACCENT : 0xFF252B45, this, 100));
             monPills[i].setTextColor(on ? 0xFFFFFFFF : Ui.MUTED);
@@ -332,67 +655,8 @@ public class FloatingService extends Service {
             String r = Client.play(this, f);
             if (!"ok".equals(r)) Toast.makeText(this, r, Toast.LENGTH_LONG).show();
         });
-        cell.setOnLongClickListener(v -> { showRename(f); return true; });
+        cell.setOnLongClickListener(v -> { showSoundEditor(f); return true; });
         return cell;
-    }
-
-    /** Inline rename: panel becomes focusable just long enough to type. */
-    private void showRename(File f) {
-        editing = true;
-        panel.removeAllViews();
-        setFocusable(true);
-
-        TextView t = new TextView(this);
-        t.setText("নাম বদলান");
-        t.setTextColor(Ui.TEXT);
-        t.setTextSize(13);
-        t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        panel.addView(t);
-
-        final EditText et = new EditText(this);
-        et.setText(SoundStore.label(this, f));
-        et.setSelectAllOnFocus(true);
-        et.setSingleLine(true);
-        et.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        et.setTextColor(Ui.TEXT);
-        et.setHintTextColor(Ui.MUTED);
-        et.setHint("যেমন: 🔥 হাসি");
-        et.setTextSize(14);
-        et.setBackground(Ui.round(0xFF252B45, this, 12));
-        int p = Ui.dp(this, 10);
-        et.setPadding(p, p, p, p);
-        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(-1, -2);
-        elp.topMargin = Ui.dp(this, 8);
-        panel.addView(et, elp);
-
-        LinearLayout btns = new LinearLayout(this);
-        btns.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(-1, -2);
-        blp.topMargin = Ui.dp(this, 8);
-        panel.addView(btns, blp);
-
-        TextView cancel = Ui.pill(this, "বাতিল", 0xFF2A3050, Ui.TEXT, 12);
-        TextView save = Ui.pill(this, "সেভ", Ui.ACCENT, 0xFFFFFFFF, 12);
-        LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, Ui.dp(this, 34), 1f);
-        LinearLayout.LayoutParams b = new LinearLayout.LayoutParams(0, Ui.dp(this, 34), 1f);
-        b.leftMargin = Ui.dp(this, 8);
-        btns.addView(cancel, a);
-        btns.addView(save, b);
-
-        Runnable done = () -> {
-            hideKeyboard();
-            editing = false;
-            setFocusable(false);
-            if (panel != null) render();
-        };
-        cancel.setOnClickListener(v -> done.run());
-        save.setOnClickListener(v -> { SoundStore.setLabel(this, f, et.getText().toString()); done.run(); });
-        et.setOnEditorActionListener((v, id, ev) -> { save.performClick(); return true; });
-
-        et.post(() -> {
-            et.requestFocus();
-            getSystemService(InputMethodManager.class).showSoftInput(et, InputMethodManager.SHOW_IMPLICIT);
-        });
     }
 
     @Override public void onDestroy() {

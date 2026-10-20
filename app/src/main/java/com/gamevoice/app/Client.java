@@ -41,9 +41,15 @@ public class Client {
         IUserService s = svc;
         if (s == null) return "Shizuku সংযুক্ত নয়";
         String r;
+        ParcelFileDescriptor pfd = null;
         try {
-            r = s.play(ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY));
+            pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
+            r = s.play(pfd);
         } catch (Throwable e) { return "ERR: " + e; }
+        finally {
+            // The remote side got its own duplicate; close ours so descriptors don't leak on every tap.
+            if (pfd != null) { try { pfd.close(); } catch (Throwable ignored) {} }
+        }
         // play() returns once decoding is done and streaming has started, so start the local copy now.
         if ("ok".equals(r)) startMonitor(ctx, f); else stopMonitor();
         return r;
