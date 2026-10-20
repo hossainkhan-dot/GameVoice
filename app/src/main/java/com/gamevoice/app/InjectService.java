@@ -190,7 +190,10 @@ public class InjectService extends IUserService.Stub {
                 ch = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
             }
         }
-        try { c.stop(); } catch (Throwable ignored) {}\n        c.release(); ex.release();\n        int frames = len / ch;
+        try { c.stop(); } catch (Throwable ignored) {}
+        c.release();
+        ex.release();
+        int frames = len / ch;
         short[] mono = new short[frames];
         for (int i = 0; i < frames; i++) {
             int s = 0;
