@@ -18,7 +18,17 @@ public class InjectService extends IUserService.Stub {
 
     public InjectService() {}
 
+    private Object keepPolicy; // strong ref so the registered policy is never GC'd
+
     private synchronized void init() throws Exception {
+        if (track != null) return;
+        // We run inside a Binder transaction from the app (uid != shell). AudioPolicy checks
+        // MODIFY_AUDIO_ROUTING against the *calling* uid, so reset identity to the shell process.
+        long tok = Binder.clearCallingIdentity();
+        try { initInner(); } finally { Binder.restoreCallingIdentity(tok); }
+    }
+
+    private void initInner() throws Exception {
         if (track != null) return;
         try { org.lsposed.hiddenapibypass.HiddenApiBypass.addHiddenApiExemptions("L"); } catch (Throwable ignored) {}
         Class<?> at = Class.forName("android.app.ActivityThread");
@@ -68,8 +78,11 @@ public class InjectService extends IUserService.Stub {
         AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
         int r = (Integer) AudioManager.class.getMethod("registerAudioPolicy", polC).invoke(am, policy);
         if (r != 0) throw new IllegalStateException("registerAudioPolicy=" + r);
-        track = (AudioTrack) polC.getMethod("createAudioTrackSource", mixC).invoke(policy, mix);
-        track.play();
+        keepPolicy = policy;
+        AudioTrack t = (AudioTrack) polC.getMethod("createAudioTrackSource", mixC).invoke(policy, mix);
+        if (t == null) throw new IllegalStateException("createAudioTrackSource returned null (check logcat tag AudioPolicy)");
+        t.play();
+        track = t;
     }
 
     @Override public void destroy() { stop(); System.exit(0); }
