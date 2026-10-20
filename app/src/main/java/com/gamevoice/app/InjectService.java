@@ -68,7 +68,7 @@ public class InjectService extends IUserService.Stub {
         AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
         int r = (Integer) AudioManager.class.getMethod("registerAudioPolicy", polC).invoke(am, policy);
         if (r != 0) throw new IllegalStateException("registerAudioPolicy=" + r);
-        track = (AudioTrack) polC.getMethod("createAudioTrack", mixC).invoke(policy, mix);
+        track = (AudioTrack) polC.getMethod("createAudioTrackSource", mixC).invoke(policy, mix);
         track.play();
     }
 
