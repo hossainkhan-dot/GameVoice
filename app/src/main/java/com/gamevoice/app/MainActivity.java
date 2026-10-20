@@ -64,6 +64,10 @@ public class MainActivity extends Activity {
         return b;
     }
 
+    private void showErr(String s) {
+        new android.app.AlertDialog.Builder(this).setMessage(s).setPositiveButton("OK", null).show();
+    }
+
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_LONG).show(); }
 
     private void connect() {
@@ -82,7 +86,7 @@ public class MainActivity extends Activity {
         for (File f : SoundStore.list(this)) {
             Button bt = btn("▶ " + f.getName(), v -> {
                 String r = Client.play(f);
-                if (!"ok".equals(r)) toast(r);
+                if (!"ok".equals(r)) showErr(r);
             });
             bt.setOnLongClickListener(v -> { f.delete(); refresh(); return true; });
             list.addView(bt);

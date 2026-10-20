@@ -20,6 +20,7 @@ public class InjectService extends IUserService.Stub {
 
     private synchronized void init() throws Exception {
         if (track != null) return;
+        try { org.lsposed.hiddenapibypass.HiddenApiBypass.addHiddenApiExemptions("L"); } catch (Throwable ignored) {}
         Class<?> at = Class.forName("android.app.ActivityThread");
         Object th = at.getMethod("currentActivityThread").invoke(null);
         if (th == null) th = at.getMethod("systemMain").invoke(null);
@@ -100,7 +101,10 @@ public class InjectService extends IUserService.Stub {
             return "ok";
         } catch (Throwable e) {
             Throwable c = e.getCause() != null ? e.getCause() : e;
-            return "ERR: " + c;
+            StringBuilder sb = new StringBuilder("ERR: " + c);
+            StackTraceElement[] st = c.getStackTrace();
+            for (int i = 0; i < Math.min(3, st.length); i++) sb.append("\n  at ").append(st[i]);
+            return sb.toString();
         }
     }
 
