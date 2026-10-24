@@ -16,14 +16,24 @@ public class Client {
 
     private static MediaPlayer mon;     // local "self-monitor" player (your own speaker)
     private static int monPct = 30;
+    /** null = not checked yet, TRUE = mic injection works, FALSE = this phone refuses it (use speaker mode). */
+    public static volatile Boolean injectOk;
+    private static boolean speakerMode, warned;
 
     private static final ServiceConnection conn = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName n, IBinder b) {
             svc = IUserService.Stub.asInterface(b);
+            injectOk = null;
             if (onChange != null) onChange.run();
+            // Find out in the background whether mic injection is possible at all on this phone.
+            new Thread(() -> {
+                try { injectOk = svc.ready(); } catch (Throwable e) { injectOk = null; }
+                if (onChange != null) onChange.run();
+            }, "gv-ready").start();
         }
         @Override public void onServiceDisconnected(ComponentName n) {
             svc = null;
+            injectOk = null;
             if (onChange != null) onChange.run();
         }
     };
@@ -39,6 +49,7 @@ public class Client {
     /** Sends the sound to everyone (mic injection) and, if enabled, also to your own speaker. */
     public static String play(Context ctx, File f) {
         IUserService s = svc;
+        if (Boolean.FALSE.equals(injectOk)) return playSpeaker(ctx, f);
         if (s == null) return "Shizuku সংযুক্ত নয়";
         // Why did the previous sound fail? (decode / mic-injection errors happen on a background thread)
         try {
@@ -61,6 +72,23 @@ public class Client {
         return r;
     }
 
+    /**
+     * Fallback for phones whose Android refuses mic injection (e.g. Android 11 on some ROMs):
+     * play the sound out loud at the folder's "other side" volume so the microphone picks it up.
+     * Quality is lower and voice-chat echo cancellation may reduce it.
+     */
+    private static String playSpeaker(Context ctx, File f) {
+        int pct = SoundStore.sendVolume(ctx, SoundStore.folderOf(ctx, f));
+        if (!warned) {
+            warned = true;
+            android.widget.Toast.makeText(ctx,
+                    "এই ফোনে সরাসরি মাইকে ঢোকানো সম্ভব নয়; স্পিকারে বাজছে, মাইক ধরলে অপর পাশ শুনবে। ফোনের ভলিউম বাড়ান।",
+                    android.widget.Toast.LENGTH_LONG).show();
+        }
+        startPlayer(ctx, f, Math.max(1, pct), true);
+        return "ok";
+    }
+
     public static void stop() {
         try { if (svc != null) svc.stop(); } catch (Throwable ignored) {}
         stopMonitor();
@@ -71,7 +99,7 @@ public class Client {
         monPct = pct;
         SoundStore.setMonitor(ctx, pct);
         MediaPlayer m = mon;
-        if (m == null) return;
+        if (m == null || speakerMode) return;
         if (pct <= 0) { stopMonitor(); return; }
         try { m.setVolume(pct / 100f, pct / 100f); } catch (Throwable ignored) {}
     }
@@ -79,16 +107,19 @@ public class Client {
     public static synchronized void loadMonitor(Context ctx) { monPct = SoundStore.getMonitor(ctx); }
     public static int getMonitor() { return monPct; }
 
-    private static synchronized void startMonitor(Context ctx, File f) {
+    private static void startMonitor(Context ctx, File f) { startPlayer(ctx, f, monPct, false); }
+
+    private static synchronized void startPlayer(Context ctx, File f, int pct, boolean speaker) {
         stopMonitor();
-        if (monPct <= 0) return;
+        if (pct <= 0) return;
+        speakerMode = speaker;
         try {
             final MediaPlayer mp = new MediaPlayer();
             mp.setAudioAttributes(new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build());
             mp.setDataSource(f.getPath());
-            mp.setVolume(monPct / 100f, monPct / 100f);
+            mp.setVolume(pct / 100f, pct / 100f);
             mp.setOnPreparedListener(MediaPlayer::start);
             mp.setOnCompletionListener(m -> release(m));
             mp.setOnErrorListener((m, w, e) -> { release(m); return true; });

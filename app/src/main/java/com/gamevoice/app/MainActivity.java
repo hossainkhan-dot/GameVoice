@@ -254,6 +254,15 @@ public class MainActivity extends Activity {
         status.removeAllViews();
         statusRow("Shizuku", Client.svc != null);
         statusRow("ওভারলে পারমিশন", Settings.canDrawOverlays(this));
+        if (Client.svc != null && Client.injectOk != null) {
+            statusRow("মাইকে সরাসরি শব্দ", Client.injectOk);
+            if (!Client.injectOk) {
+                TextView w = text("এই ফোনের Android এটা অনুমতি দিচ্ছে না, তাই “স্পিকার মোড” চলছে: ভয়েস স্পিকারে বাজবে, মাইক সেটা ধরবে। "
+                        + "ফোনের মিডিয়া ভলিউম বাড়ান, ইয়ারফোন লাগাবেন না। (বিস্তারিত: ধাপ ৩)", 12, Ui.MUTED, false);
+                w.setPadding(0, dp(6), 0, 0);
+                status.addView(w);
+            }
+        }
 
         curFolder = SoundStore.selected(this); // a deleted folder falls back to "সব"
         buildFolderBar();

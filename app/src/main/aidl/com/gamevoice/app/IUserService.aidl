@@ -6,4 +6,5 @@ interface IUserService {
     void stop() = 2;
     String status() = 3;
     String diagnose() = 4;
+    boolean ready() = 5;
 }

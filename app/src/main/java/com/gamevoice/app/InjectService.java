@@ -153,6 +153,11 @@ public class InjectService extends IUserService.Stub {
         return sb.toString();
     }
 
+    /** True when mic injection could be set up on this phone (Android may refuse the permission). */
+    @Override public boolean ready() {
+        try { init(); return true; } catch (Throwable e) { return false; }
+    }
+
     /** Last playback error (cleared once read), so the app can show why nothing was heard. */
     @Override public String status() {
         String e = lastError;
