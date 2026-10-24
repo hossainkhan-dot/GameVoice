@@ -21,6 +21,9 @@ public class InjectService extends IUserService.Stub {
     public InjectService() {}
 
     private Object keepPolicy; // strong ref so the registered policy is never GC'd
+    private Object keepMgr;    // AudioManager used to register it (needed to unregister on failure)
+    private HandlerThread policyThread;
+    private volatile String initReport = "";
 
     private synchronized void init() throws Exception {
         if (track != null) return;
@@ -30,9 +33,51 @@ public class InjectService extends IUserService.Stub {
         try { initInner(); } finally { Binder.restoreCallingIdentity(tok); }
     }
 
+    private static Throwable root(Throwable e) {
+        while (e.getCause() != null && e.getCause() != e) e = e.getCause();
+        return e;
+    }
+
+    /**
+     * Different Android versions accept different AudioPolicy mixes (Android 11 is stricter than 13+),
+     * so try a few configurations and remember why each one failed.
+     */
     private void initInner() throws Exception {
         if (track != null) return;
         try { org.lsposed.hiddenapibypass.HiddenApiBypass.addHiddenApiExemptions("L"); } catch (Throwable ignored) {}
+        StringBuilder log = new StringBuilder();
+        for (int v = 0; v < 4; v++) {
+            try {
+                initVariant(v);
+                initReport = "ok (config " + v + ")";
+                return;
+            } catch (Throwable e) {
+                Throwable r = root(e);
+                log.append("config ").append(v).append(": ").append(r).append('\n');
+                unregisterQuiet();
+            }
+        }
+        initReport = log.toString();
+        throw new IllegalStateException(initReport);
+    }
+
+    private void unregisterQuiet() {
+        try {
+            if (keepPolicy != null && keepMgr != null) {
+                Class<?> polC = Class.forName("android.media.audiopolicy.AudioPolicy");
+                AudioManager.class.getMethod("unregisterAudioPolicy", polC).invoke(keepMgr, keepPolicy);
+            }
+        } catch (Throwable ignored) {}
+        keepPolicy = null;
+        keepMgr = null;
+        if (policyThread != null) { try { policyThread.quitSafely(); } catch (Throwable ignored) {} policyThread = null; }
+    }
+
+    /**
+     * v0: injector role + all capture presets (newest Android).
+     * v1: no explicit role. v2: only the 3 common mic presets. v3: same but RENDER|LOOP_BACK flags.
+     */
+    private void initVariant(int v) throws Exception {
         Class<?> at = Class.forName("android.app.ActivityThread");
         Object th = at.getMethod("currentActivityThread").invoke(null);
         if (th == null) th = at.getMethod("systemMain").invoke(null);
@@ -47,11 +92,16 @@ public class InjectService extends IUserService.Stub {
 
         Class<?> ruleB = Class.forName("android.media.audiopolicy.AudioMixingRule$Builder");
         Object rb = ruleB.getConstructor().newInstance();
-        try { ruleB.getMethod("setTargetMixRole", int.class).invoke(rb, 1); } catch (NoSuchMethodException ignored) {}
+        if (v == 0) {
+            try { ruleB.getMethod("setTargetMixRole", int.class).invoke(rb, 1); } catch (NoSuchMethodException ignored) {}
+        }
         Method addRule = ruleB.getMethod("addMixRule", int.class, Object.class);
-        int[] presets = {MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.CAMCORDER,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                MediaRecorder.AudioSource.UNPROCESSED};
+        int[] presets = v >= 2
+                ? new int[]{MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                        MediaRecorder.AudioSource.VOICE_COMMUNICATION}
+                : new int[]{MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.CAMCORDER,
+                        MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                        MediaRecorder.AudioSource.UNPROCESSED};
         Method setPreset = AudioAttributes.Builder.class.getMethod("setCapturePreset", int.class);
         for (int p : presets) {
             AudioAttributes.Builder ab = new AudioAttributes.Builder();
@@ -65,26 +115,49 @@ public class InjectService extends IUserService.Stub {
         Class<?> mixC = Class.forName("android.media.audiopolicy.AudioMix");
         Object mb = mixB.getConstructor(ruleC).newInstance(rule);
         mixB.getMethod("setFormat", AudioFormat.class).invoke(mb, fmt);
-        mixB.getMethod("setRouteFlags", int.class).invoke(mb, 2 /* ROUTE_FLAG_LOOP_BACK */);
+        mixB.getMethod("setRouteFlags", int.class).invoke(mb, v == 3 ? 3 : 2 /* LOOP_BACK (3 = RENDER|LOOP_BACK) */);
         Object mix = mixB.getMethod("build").invoke(mb);
 
-        HandlerThread ht = new HandlerThread("gv-policy");
-        ht.start();
+        policyThread = new HandlerThread("gv-policy");
+        policyThread.start();
         Class<?> polB = Class.forName("android.media.audiopolicy.AudioPolicy$Builder");
         Class<?> polC = Class.forName("android.media.audiopolicy.AudioPolicy");
         Object pb = polB.getConstructor(Context.class).newInstance(ctx);
-        try { polB.getMethod("setLooper", Looper.class).invoke(pb, ht.getLooper()); } catch (Throwable ignored) {}
+        try { polB.getMethod("setLooper", Looper.class).invoke(pb, policyThread.getLooper()); } catch (Throwable ignored) {}
         polB.getMethod("addMix", mixC).invoke(pb, mix);
         Object policy = polB.getMethod("build").invoke(pb);
 
         AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
-        int r = (Integer) AudioManager.class.getMethod("registerAudioPolicy", polC).invoke(am, policy);
-        if (r != 0) throw new IllegalStateException("registerAudioPolicy=" + r);
         keepPolicy = policy;
+        keepMgr = am;
+        int r = (Integer) AudioManager.class.getMethod("registerAudioPolicy", polC).invoke(am, policy);
+        if (r != 0) throw new IllegalStateException("registerAudioPolicy=" + r + " (permission refused?)");
         AudioTrack t = (AudioTrack) polC.getMethod("createAudioTrackSource", mixC).invoke(policy, mix);
         if (t == null) throw new IllegalStateException("createAudioTrackSource returned null (check logcat tag AudioPolicy)");
         t.play();
         track = t;
+    }
+
+    /** Human readable health report for the app's "ডায়াগনস্টিক" button. */
+    @Override public String diagnose() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n")
+                .append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append("\n\n");
+        try {
+            init();
+            sb.append("✔ মাইক ইনজেকশন প্রস্তুত: ").append(initReport);
+        } catch (Throwable e) {
+            sb.append("✘ মাইক ইনজেকশন চালু হয়নি:\n").append(initReport.isEmpty() ? String.valueOf(root(e)) : initReport);
+        }
+        if (!lastError.isEmpty()) sb.append("\n\nশেষ বাজানোর ত্রুটি: ").append(lastError);
+        return sb.toString();
+    }
+
+    /** Last playback error (cleared once read), so the app can show why nothing was heard. */
+    @Override public String status() {
+        String e = lastError;
+        lastError = "";
+        return e;
     }
 
     @Override public void destroy() { stop(); System.exit(0); }

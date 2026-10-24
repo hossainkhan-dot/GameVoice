@@ -32,7 +32,7 @@ public class Client {
         if (svc != null) return;
         Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                 new ComponentName(ctx.getPackageName(), InjectService.class.getName()))
-                .daemon(false).processNameSuffix("inject").version(2); // bumped: the AIDL play() signature changed
+                .daemon(false).processNameSuffix("inject").version(3); // bumped: the AIDL interface changed
         Shizuku.bindUserService(args, conn);
     }
 
@@ -40,6 +40,12 @@ public class Client {
     public static String play(Context ctx, File f) {
         IUserService s = svc;
         if (s == null) return "Shizuku সংযুক্ত নয়";
+        // Why did the previous sound fail? (decode / mic-injection errors happen on a background thread)
+        try {
+            String prev = s.status();
+            if (prev != null && !prev.isEmpty())
+                android.widget.Toast.makeText(ctx, prev, android.widget.Toast.LENGTH_LONG).show();
+        } catch (Throwable ignored) {}
         String r;
         ParcelFileDescriptor pfd = null;
         try {

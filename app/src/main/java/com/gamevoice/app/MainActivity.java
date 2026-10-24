@@ -55,6 +55,7 @@ public class MainActivity extends Activity {
         root.addView(step("১", "Shizuku অনুমতি ও সংযোগ", v -> connect()));
         root.addView(step("২", "ওভারলে পারমিশন", v -> startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:" + getPackageName())))));
+        root.addView(step("৩", "সমস্যা পরীক্ষা (ডায়াগনস্টিক)", v -> diagnose()));
 
         // overlay on / off
         LinearLayout onoff = new LinearLayout(this);
@@ -211,6 +212,27 @@ public class MainActivity extends Activity {
             else Client.bind(this);
         } catch (Throwable e) { toast("Shizuku নেই: " + e); }
         refresh();
+    }
+
+    /** Asks the Shizuku-side service to start mic injection and shows exactly what failed, if anything. */
+    private void diagnose() {
+        final IUserService s = Client.svc;
+        if (s == null) { toast("আগে ধাপ ১: Shizuku সংযোগ করুন"); return; }
+        toast("পরীক্ষা চলছে…");
+        new Thread(() -> {
+            String rep;
+            try { rep = s.diagnose(); } catch (Throwable e) { rep = "ERR: " + e; }
+            final String out = rep;
+            runOnUiThread(() -> {
+                TextView tv = text(out, 13, Ui.TEXT, false);
+                tv.setTextIsSelectable(true);
+                tv.setPadding(dp(20), dp(12), dp(20), dp(4));
+                ScrollView sv = new ScrollView(this);
+                sv.addView(tv);
+                new android.app.AlertDialog.Builder(this).setTitle("ডায়াগনস্টিক").setView(sv)
+                        .setPositiveButton("OK", null).show();
+            });
+        }, "gv-diag").start();
     }
 
     private void statusRow(String label, boolean ok) {
