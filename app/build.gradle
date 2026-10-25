@@ -1,0 +1,34 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.gamevoice.app'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'com.gamevoice.app'
+        minSdk 30
+        targetSdk 34
+        // Every CI build gets a higher versionCode, so Android always accepts it as an update.
+        def run = (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
+        versionCode run
+        versionName "1.${run}"
+    }
+    // One fixed key for every build. Before, each GitHub Actions run signed the APK with a fresh
+    // random debug key, so Android refused to install it over the old one (signature mismatch).
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildFeatures { aidl true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+dependencies {
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
+    implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:4.3'
+}
