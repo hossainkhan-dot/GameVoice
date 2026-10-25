@@ -268,7 +268,6 @@ public class MainActivity extends Activity {
             } catch (Throwable e) { toast("ইমেইল অ্যাপ পাওয়া যায়নি"); }
         }));
         box.addView(linkRow("📘  Facebook: hossain.niloi", () -> openLink("https://www.facebook.com/hossain.niloi")));
-        box.addView(linkRow("💻  GitHub: hossainkhan-dot/GameVoice", () -> openLink("https://github.com/hossainkhan-dot/GameVoice")));
 
         ScrollView sv = new ScrollView(this);
         sv.addView(box);
