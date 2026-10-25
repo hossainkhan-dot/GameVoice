@@ -42,7 +42,7 @@ public class Client {
         if (svc != null) return;
         Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                 new ComponentName(ctx.getPackageName(), InjectService.class.getName()))
-                .daemon(false).processNameSuffix("inject").version(3); // bumped: the AIDL interface changed
+                .daemon(false).processNameSuffix("inject").version(4); // bumped: the AIDL interface changed (music player methods)
         Shizuku.bindUserService(args, conn);
     }
 
@@ -98,6 +98,7 @@ public class Client {
     public static synchronized void setMonitor(Context ctx, int pct) {
         monPct = pct;
         SoundStore.setMonitor(ctx, pct);
+        MusicPlayer.onMonitorChanged(); // a running song follows the same "নিজে শুনুন" level
         MediaPlayer m = mon;
         if (m == null || speakerMode) return;
         if (pct <= 0) { stopMonitor(); return; }

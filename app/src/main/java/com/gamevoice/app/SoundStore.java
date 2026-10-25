@@ -18,6 +18,13 @@ public class SoundStore {
     public static final String ALL = "";
     public static final String DEFAULT_EMOJI = "📁";
 
+    /** The permanent music folder: reserved id, cannot be renamed or deleted. Holds music only. */
+    public static final String MUSIC = "music";
+    public static final String MUSIC_EMOJI = "🎵";      // change this one line to use another logo
+    public static final String MUSIC_NAME = "মিউজিক";
+    /** Default "how loud the other side hears music" (%). Songs are much louder than short voices. */
+    public static final int MUSIC_DEFAULT_VOL = 70;
+
     /** A voice-pack folder. The icon is an emoji, never a picture / letter. */
     public static class Folder {
         public final String id, name, emoji;
@@ -166,7 +173,8 @@ public class SoundStore {
     /** How loud (0..100 %) the OTHER side hears voices of this folder. Voices outside folders: 100. */
     public static int sendVolume(Context c, String folderId) {
         if (folderId == null || folderId.isEmpty()) return 100;
-        return Math.max(0, Math.min(100, prefs(c).getInt("vol:" + folderId, 100)));
+        int def = MUSIC.equals(folderId) ? MUSIC_DEFAULT_VOL : 100;
+        return Math.max(0, Math.min(100, prefs(c).getInt("vol:" + folderId, def)));
     }
 
     public static void setSendVolume(Context c, String folderId, int pct) {
@@ -189,6 +197,7 @@ public class SoundStore {
     /** The folder that was open last (shared by the app and the overlay). */
     public static String selected(Context c) {
         String s = prefs(c).getString("sel", ALL);
+        if (MUSIC.equals(s)) return MUSIC;
         return (s.isEmpty() || folder(c, s) == null) ? ALL : s;
     }
 
@@ -208,6 +217,13 @@ public class SoundStore {
     // ------------------------------------------------------------------ add
 
     public static File add(Context c, Uri uri, String folderId) throws IOException {
+        File out = copyIn(c, uri, dir(c));
+        setFolder(c, out, folderId);
+        return out;
+    }
+
+    /** Copies a picked file into app storage under its display name (never overwrites). */
+    private static File copyIn(Context c, Uri uri, File dir) throws IOException {
         String name = null;
         try (Cursor q = c.getContentResolver().query(uri, null, null, null, null)) {
             if (q != null && q.moveToFirst()) {
@@ -217,7 +233,7 @@ public class SoundStore {
         }
         if (name == null || name.trim().isEmpty()) name = "sound_" + System.currentTimeMillis();
         name = name.replaceAll("[/\\\\]", "_");
-        File out = unique(dir(c), name);
+        File out = unique(dir, name);
         try (InputStream in = c.getContentResolver().openInputStream(uri);
              OutputStream os = new FileOutputStream(out)) {
             if (in == null) throw new IOException("ফাইল পড়া যায়নি");
@@ -225,8 +241,47 @@ public class SoundStore {
             int n;
             while ((n = in.read(b)) > 0) os.write(b, 0, n);
         }
-        setFolder(c, out, folderId);
         return out;
+    }
+
+    // ---------------------------------------------------------------- music
+
+    public static File musicDir(Context c) {
+        File d = new File(c.getFilesDir(), "music");
+        d.mkdirs();
+        return d;
+    }
+
+    /** Every music file, A-Z. These never show up in the voice folders / "সব". */
+    public static List<File> listMusic(Context c) {
+        File[] fs = musicDir(c).listFiles();
+        List<File> l = fs == null ? new ArrayList<>() : new ArrayList<>(Arrays.asList(fs));
+        Collections.sort(l, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+        return l;
+    }
+
+    public static File addMusic(Context c, Uri uri) throws IOException {
+        return copyIn(c, uri, musicDir(c));
+    }
+
+    public static String musicLabel(Context c, File f) {
+        String s = prefs(c).getString("mname:" + f.getName(), null);
+        if (s != null && !s.trim().isEmpty()) return s;
+        String n = f.getName();
+        int dot = n.lastIndexOf('.');
+        return dot > 0 ? n.substring(0, dot) : n;
+    }
+
+    public static void setMusicLabel(Context c, File f, String name) {
+        SharedPreferences.Editor e = prefs(c).edit();
+        if (name == null || name.trim().isEmpty()) e.remove("mname:" + f.getName());
+        else e.putString("mname:" + f.getName(), name.trim());
+        e.apply();
+    }
+
+    public static void deleteMusic(Context c, File f) {
+        f.delete();
+        prefs(c).edit().remove("mname:" + f.getName()).apply();
     }
 
     /** Never overwrite an existing voice that happens to have the same file name. */

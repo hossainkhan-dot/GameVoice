@@ -38,6 +38,14 @@ public class FloatingService extends Service {
     private float fx, fy;          // saved bubble position, 0..1 of the free screen area
     private int slide;             // -1: panel is right of bubble, 1: left of it, 0: above/below
     private String curFolder = SoundStore.ALL;
+    private File shownMusic;       // the song that was highlighted the last time the music list was drawn
+    private final Runnable musicL = () -> {
+        // The player controls update themselves; only the song list needs a redraw when the song changes.
+        if (!open || editing || panel == null || !SoundStore.MUSIC.equals(curFolder)) return;
+        String a = MusicPlayer.cur == null ? null : MusicPlayer.cur.getName();
+        String b = shownMusic == null ? null : shownMusic.getName();
+        if (!java.util.Objects.equals(a, b)) refreshPanel();
+    };
     private final TextView[] monPills = new TextView[SoundStore.MONITOR_LEVELS.length];
 
     @Override public IBinder onBind(Intent i) { return null; }
@@ -167,6 +175,7 @@ public class FloatingService extends Service {
         panel.setTranslationX(slide * pw / 2f);
         wm.addView(panel, pp);
         panelAttached = true;
+        MusicPlayer.addListener(musicL);
         panel.animate().alpha(1f).translationX(0f).setDuration(180).start();
         open = true;
         bubble.setActive(true);
@@ -176,6 +185,7 @@ public class FloatingService extends Service {
         if (!open) return;
         open = false;
         panelAttached = false;
+        MusicPlayer.removeListener(musicL);
         bubble.setActive(false);
         hideKeyboard();
         final View p = panel;
@@ -266,6 +276,7 @@ public class FloatingService extends Service {
         panel.addView(header());
         panel.addView(monitorRow());
         panel.addView(folderBar());
+        if (SoundStore.MUSIC.equals(curFolder)) { renderMusic(); return; }
 
         List<File> files = SoundStore.list(this, curFolder);
         scroller = new Ui.MaxHeightScroll(this);
@@ -304,6 +315,53 @@ public class FloatingService extends Service {
         hint.setGravity(Gravity.CENTER);
         hint.setPadding(0, Ui.dp(this, 6), 0, 0);
         panel.addView(hint);
+    }
+
+    /** Panel content for the 🎵 folder: compact player on top, song list below. */
+    private void renderMusic() {
+        MusicUi.Player pl = new MusicUi.Player(this, true);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-1, -2);
+        plp.topMargin = Ui.dp(this, 8);
+        panel.addView(pl, plp);
+
+        shownMusic = MusicPlayer.cur;
+        scroller = new Ui.MaxHeightScroll(this);
+        scroller.maxPx = (int) (sh * 0.28f);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        scroller.addView(col);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
+        slp.topMargin = Ui.dp(this, 6);
+        panel.addView(scroller, slp);
+
+        List<File> songs = SoundStore.listMusic(this);
+        if (songs.isEmpty()) {
+            TextView t = new TextView(this);
+            t.setText("কোনো মিউজিক নেই।\nঅ্যাপ খুলে 🎵 ফোল্ডারে গান যোগ করুন।");
+            t.setTextColor(Ui.MUTED);
+            t.setTextSize(12);
+            t.setGravity(Gravity.CENTER);
+            t.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 12));
+            col.addView(t);
+        }
+        for (final File f : songs) {
+            boolean isCur = shownMusic != null && shownMusic.getName().equals(f.getName());
+            TextView t = new TextView(this);
+            t.setText((isCur ? "♫  " : "♪  ") + SoundStore.musicLabel(this, f));
+            t.setTextColor(isCur ? 0xFFFFFFFF : 0xFFDCE0EE);
+            t.setTextSize(12);
+            t.setTypeface(android.graphics.Typeface.DEFAULT, isCur ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+            t.setSingleLine(true);
+            t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            t.setGravity(Gravity.CENTER_VERTICAL);
+            int hp = Ui.dp(this, 10);
+            t.setPadding(hp, 0, hp, 0);
+            if (isCur) t.setBackground(Ui.round(Ui.ACCENT, this, 10));
+            t.setOnClickListener(v -> MusicPlayer.play(this, f));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 32));
+            lp.bottomMargin = Ui.dp(this, 3);
+            col.addView(t, lp);
+        }
     }
 
     private View header() {
@@ -347,6 +405,9 @@ public class FloatingService extends Service {
         hs.addView(row);
 
         row.addView(tab("📂", "সব", curFolder.isEmpty(), v -> selectFolder(SoundStore.ALL), null));
+        // Permanent music folder (no edit / delete here; its volume is set in the app).
+        row.addView(tab(SoundStore.MUSIC_EMOJI, SoundStore.MUSIC_NAME, SoundStore.MUSIC.equals(curFolder),
+                v -> selectFolder(SoundStore.MUSIC), null));
         for (SoundStore.Folder f : SoundStore.folders(this)) {
             row.addView(tab(f.emoji, f.name, f.id.equals(curFolder),
                     v -> selectFolder(f.id), v -> showFolderEditor(f)));
@@ -683,6 +744,7 @@ public class FloatingService extends Service {
     }
 
     @Override public void onDestroy() {
+        MusicPlayer.removeListener(musicL);
         try { if (panel != null) wm.removeView(panel); } catch (Throwable ignored) {}
         try { if (bubble != null) wm.removeView(bubble); } catch (Throwable ignored) {}
         super.onDestroy();

@@ -8,6 +8,8 @@ import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ShortBuffer;
+import java.util.Arrays;
+import java.util.function.BooleanSupplier;
 
 /** Runs in the Shizuku (shell-uid) process. Injects PCM into every app's mic capture. */
 public class InjectService extends IUserService.Stub {
@@ -17,6 +19,17 @@ public class InjectService extends IUserService.Stub {
     private volatile boolean cancel;
     private volatile int generation;
     private volatile String lastError = "";
+
+    // ---- mixer: voice clip + music are summed and written by ONE thread into the mic track ----
+    private final Object mixLock = new Object();
+    private short[] clip;                 // current voice clip (mono 48k), null = none
+    private int clipOff;
+    private short[] music;                // current music track (mono 48k), null = none
+    private int musicOff;                 // next sample the mixer will take
+    private int musicState;               // 0 idle, 1 loading, 2 playing, 3 paused, 4 ended
+    private volatile int musicGen;
+    private volatile float musicGain = 1f;
+    private Thread mixer;
 
     public InjectService() {}
 
@@ -165,14 +178,82 @@ public class InjectService extends IUserService.Stub {
         return e;
     }
 
-    @Override public void destroy() { stop(); System.exit(0); }
+    @Override public void destroy() { stop(); musicStop(); System.exit(0); }
+
+    // ------------------------------------------------------------------ mixer
+
+    private void startMixer() {
+        synchronized (mixLock) {
+            if (mixer != null) return;
+            Thread t = new Thread(this::mixLoop, "gv-mixer");
+            mixer = t;
+            t.start();
+        }
+    }
+
+    private boolean hasWork() { return clip != null || (music != null && musicState == 2); }
+
+    private void mixLoop() {
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO); } catch (Throwable ignored) {}
+        final int N = 960; // 20 ms @ 48 kHz
+        short[] out = new short[N];
+        while (true) {
+            synchronized (mixLock) {
+                while (!hasWork()) {
+                    try { mixLock.wait(); } catch (InterruptedException e) { return; }
+                }
+                final short[] c = clip, m = (music != null && musicState == 2) ? music : null;
+                final float g = musicGain;
+                for (int i = 0; i < N; i++) {
+                    int v = 0;
+                    if (c != null && clipOff + i < c.length) v += c[clipOff + i];
+                    if (m != null && musicOff + i < m.length) v += (int) (m[musicOff + i] * g);
+                    out[i] = (short) Math.max(-32768, Math.min(32767, v));
+                }
+                if (c != null) {
+                    clipOff += N;
+                    if (clipOff >= c.length) clip = null;
+                }
+                if (m != null) {
+                    musicOff += N;
+                    if (musicOff >= m.length) { musicOff = m.length; musicState = 4; }
+                }
+            }
+            AudioTrack t = track;
+            int off = 0;
+            while (t != null && off < N) {
+                int w = t.write(out, off, N - off, AudioTrack.WRITE_BLOCKING);
+                if (w < 0) {
+                    lastError = "ERR: AudioTrack.write=" + w;
+                    try { Thread.sleep(20); } catch (InterruptedException e) { return; }
+                    break;
+                }
+                off += w;
+                if (w == 0) Thread.yield();
+            }
+        }
+    }
+
+    /** Drops audio already queued in the track (pause -> flush -> play: flush alone is a no-op while playing). */
+    private void flushTrack() {
+        AudioTrack t = track;
+        if (t == null) return;
+        try { t.pause(); t.flush(); t.play(); } catch (Throwable ignored) {}
+    }
+
+    // ------------------------------------------------------------ voice clips
 
     @Override public void stop() {
         cancel = true;
         generation++;
         Thread t = player;
         if (t != null) t.interrupt();
-        try { if (track != null) track.flush(); } catch (Throwable ignored) {}
+        boolean musicRunning;
+        synchronized (mixLock) {
+            clip = null;
+            musicRunning = music != null && musicState == 2;
+        }
+        if (!musicRunning) flushTrack();
     }
 
     /**
@@ -190,23 +271,20 @@ public class InjectService extends IUserService.Stub {
         Thread t = new Thread(() -> {
             try (ParcelFileDescriptor owned = pfd) {
                 init();
+                startMixer();
                 if (request != generation || cancel) return;
-                short[] pcm = decode(owned.getFileDescriptor());
+                short[] pcm = decode(owned.getFileDescriptor(), () -> request != generation || cancel);
                 if (request != generation || cancel || pcm.length == 0) return;
                 // Per-folder "how loud the other side hears it" (linear gain, 0..100 %).
                 if (volumePct < 100) {
                     float gain = Math.max(0, volumePct) / 100f;
                     for (int i = 0; i < pcm.length; i++) pcm[i] = (short) (pcm[i] * gain);
                 }
-                int off = 0;
-                while (request == generation && !cancel && off < pcm.length) {
-                    int n = Math.min(1920, pcm.length - off);
-                    int written = track.write(pcm, off, n, AudioTrack.WRITE_BLOCKING);
-                    if (written < 0) throw new IllegalStateException("AudioTrack.write=" + written);
-                    if (written == 0) Thread.yield(); else off += written;
-                }
-                if (request == generation && cancel) {
-                    try { track.flush(); } catch (Throwable ignored) {}
+                synchronized (mixLock) {
+                    if (request != generation || cancel) return;
+                    clip = pcm;
+                    clipOff = 0;
+                    mixLock.notifyAll();
                 }
             } catch (Throwable e) {
                 if (request == generation && !cancel) {
@@ -221,78 +299,184 @@ public class InjectService extends IUserService.Stub {
         return "ok";
     }
 
-    private short[] decode(FileDescriptor fd) throws Exception {
+    // ------------------------------------------------------------------ music
+
+    /** Loads (in the background) and starts a music track at startMs. Returns at once. */
+    @Override public String musicPlay(ParcelFileDescriptor pfd, final int volumePct, final long startMs) {
+        if (pfd == null) return "ERR: music file is unavailable";
+        final int g;
+        synchronized (mixLock) {
+            g = ++musicGen;
+            music = null;
+            musicOff = 0;
+            musicState = 1;
+            musicGain = Math.max(0, Math.min(100, volumePct)) / 100f;
+        }
+        Thread t = new Thread(() -> {
+            try (ParcelFileDescriptor owned = pfd) {
+                init();
+                startMixer();
+                short[] pcm = decode(owned.getFileDescriptor(), () -> g != musicGen);
+                synchronized (mixLock) {
+                    if (g != musicGen) return;
+                    if (pcm.length == 0) { musicState = 0; lastError = "ERR: music is empty"; return; }
+                    music = pcm;
+                    musicOff = (int) Math.max(0, Math.min(pcm.length, startMs * RATE / 1000));
+                    musicState = 2;
+                    mixLock.notifyAll();
+                }
+            } catch (Throwable e) {
+                synchronized (mixLock) { if (g == musicGen) musicState = 0; }
+                lastError = "ERR: music: " + root(e);
+            }
+        }, "gv-music-load");
+        t.setPriority(Thread.NORM_PRIORITY);
+        t.start();
+        return "ok";
+    }
+
+    @Override public void musicPause() {
+        synchronized (mixLock) { if (musicState == 2) musicState = 3; }
+    }
+
+    @Override public void musicResume() {
+        synchronized (mixLock) {
+            if (music != null && (musicState == 3 || musicState == 4)) {
+                if (musicState == 4) musicOff = 0;
+                musicState = 2;
+                mixLock.notifyAll();
+            }
+        }
+    }
+
+    @Override public void musicSeek(long ms) {
+        synchronized (mixLock) {
+            if (music == null) return;
+            musicOff = (int) Math.max(0, Math.min(music.length - 1L, ms * RATE / 1000));
+            if (musicState == 4) musicState = 3;
+        }
+        flushTrack(); // so the new position is heard at once, not after the queued audio
+    }
+
+    @Override public void musicStop() {
+        boolean clipRunning;
+        synchronized (mixLock) {
+            musicGen++;
+            music = null;
+            musicOff = 0;
+            musicState = 0;
+            clipRunning = clip != null;
+        }
+        if (!clipRunning) flushTrack();
+    }
+
+    @Override public void musicVolume(int volumePct) {
+        musicGain = Math.max(0, Math.min(100, volumePct)) / 100f;
+    }
+
+    @Override public long[] musicInfo() {
+        synchronized (mixLock) {
+            long pos = 0, dur = 0;
+            if (music != null) {
+                dur = music.length * 1000L / RATE;
+                int p = musicOff;
+                if (musicState == 2) {
+                    // the mixer is ~one track buffer ahead of what is actually audible
+                    int buf = 0;
+                    try { buf = track == null ? 0 : track.getBufferSizeInFrames(); } catch (Throwable ignored) {}
+                    p = Math.max(0, p - Math.min(buf, RATE / 2));
+                }
+                pos = p * 1000L / RATE;
+                if (musicState == 4) pos = dur;
+            }
+            return new long[]{musicState, pos, dur};
+        }
+    }
+
+    // ----------------------------------------------------------------- decode
+
+    /** Decodes any audio file to mono 16-bit PCM at 48 kHz. Returns an empty array when cancelled. */
+    private short[] decode(FileDescriptor fd, BooleanSupplier cancelled) throws Exception {
         MediaExtractor ex = new MediaExtractor();
-        ex.setDataSource(fd);
-        MediaFormat f = null;
-        for (int i = 0; i < ex.getTrackCount(); i++) {
-            MediaFormat tf = ex.getTrackFormat(i);
-            String m = tf.getString(MediaFormat.KEY_MIME);
-            if (m != null && m.startsWith("audio/")) { ex.selectTrack(i); f = tf; break; }
-        }
-        if (f == null) throw new Exception("no audio track");
-        MediaCodec c = MediaCodec.createDecoderByType(f.getString(MediaFormat.KEY_MIME));
-        c.configure(f, null, null, 0);
-        c.start();
-        int rate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-        int ch = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-        short[] buf = new short[RATE * 4];
-        int len = 0;
-        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        boolean inDone = false, outDone = false;
-        while (!outDone) {
-            if (!inDone) {
-                int ii = c.dequeueInputBuffer(10000);
-                if (ii >= 0) {
-                    ByteBuffer ib = c.getInputBuffer(ii);
-                    int n = ex.readSampleData(ib, 0);
-                    if (n < 0) { c.queueInputBuffer(ii, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inDone = true; }
-                    else { c.queueInputBuffer(ii, 0, n, ex.getSampleTime(), 0); ex.advance(); }
+        MediaCodec c = null;
+        try {
+            ex.setDataSource(fd);
+            MediaFormat f = null;
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                MediaFormat tf = ex.getTrackFormat(i);
+                String m = tf.getString(MediaFormat.KEY_MIME);
+                if (m != null && m.startsWith("audio/")) { ex.selectTrack(i); f = tf; break; }
+            }
+            if (f == null) throw new Exception("no audio track");
+            c = MediaCodec.createDecoderByType(f.getString(MediaFormat.KEY_MIME));
+            c.configure(f, null, null, 0);
+            c.start();
+            int rate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+            int ch = Math.max(1, f.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
+            long durUs = f.containsKey(MediaFormat.KEY_DURATION) ? f.getLong(MediaFormat.KEY_DURATION) : 0;
+            // Pre-size from the duration so long songs do not need repeated big array copies.
+            long guess = durUs > 0 ? durUs * rate / 1000000L + rate : (long) rate * 10;
+            short[] mono = new short[(int) Math.min(guess, 200_000_000L)];
+            int len = 0;
+            short[] tmp = new short[8192];
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            boolean inDone = false, outDone = false;
+            while (!outDone) {
+                if (cancelled.getAsBoolean()) return new short[0];
+                if (!inDone) {
+                    int ii = c.dequeueInputBuffer(10000);
+                    if (ii >= 0) {
+                        ByteBuffer ib = c.getInputBuffer(ii);
+                        int n = ex.readSampleData(ib, 0);
+                        if (n < 0) { c.queueInputBuffer(ii, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inDone = true; }
+                        else { c.queueInputBuffer(ii, 0, n, ex.getSampleTime(), 0); ex.advance(); }
+                    }
+                }
+                int oi = c.dequeueOutputBuffer(info, 10000);
+                if (oi >= 0) {
+                    ByteBuffer ob = c.getOutputBuffer(oi);
+                    ob.order(ByteOrder.LITTLE_ENDIAN);
+                    ob.position(info.offset);
+                    ob.limit(info.offset + info.size);
+                    ShortBuffer sb = ob.asShortBuffer();
+                    int n = sb.remaining();
+                    if (tmp.length < n) tmp = new short[n];
+                    sb.get(tmp, 0, n);
+                    int frames = n / ch;
+                    if (len + frames > mono.length) {
+                        mono = Arrays.copyOf(mono, (int) Math.min(Integer.MAX_VALUE - 8L,
+                                Math.max(mono.length * 3L / 2, (long) len + frames)));
+                    }
+                    for (int i = 0; i < frames; i++) {
+                        int s = 0;
+                        for (int k = 0; k < ch; k++) s += tmp[i * ch + k];
+                        mono[len++] = (short) (s / ch);
+                    }
+                    c.releaseOutputBuffer(oi, false);
+                    if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outDone = true;
+                } else if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    MediaFormat of = c.getOutputFormat();
+                    rate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                    ch = Math.max(1, of.getInteger(MediaFormat.KEY_CHANNEL_COUNT));
                 }
             }
-            int oi = c.dequeueOutputBuffer(info, 10000);
-            if (oi >= 0) {
-                ByteBuffer ob = c.getOutputBuffer(oi);
-                ob.order(ByteOrder.LITTLE_ENDIAN);
-                ob.position(info.offset);
-                ob.limit(info.offset + info.size);
-                ShortBuffer sb = ob.asShortBuffer();
-                int n = sb.remaining();
-                if (len + n > buf.length) {
-                    short[] nb = new short[Math.max(buf.length * 2, len + n)];
-                    System.arraycopy(buf, 0, nb, 0, len);
-                    buf = nb;
-                }
-                sb.get(buf, len, n);
-                len += n;
-                c.releaseOutputBuffer(oi, false);
-                if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outDone = true;
-            } else if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                MediaFormat of = c.getOutputFormat();
-                rate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-                ch = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+            if (rate == RATE) return len == mono.length ? mono : Arrays.copyOf(mono, len);
+            int outLen = (int) ((long) len * RATE / rate);
+            short[] out = new short[outLen];
+            for (int i = 0; i < outLen; i++) {
+                double pos = (double) i * rate / RATE;
+                int a = (int) pos;
+                int b = Math.min(a + 1, len - 1);
+                double fr = pos - a;
+                out[i] = (short) (mono[Math.min(a, len - 1)] * (1 - fr) + mono[b] * fr);
             }
+            return out;
+        } finally {
+            if (c != null) {
+                try { c.stop(); } catch (Throwable ignored) {}
+                try { c.release(); } catch (Throwable ignored) {}
+            }
+            try { ex.release(); } catch (Throwable ignored) {}
         }
-        try { c.stop(); } catch (Throwable ignored) {}
-        c.release();
-        ex.release();
-        int frames = len / ch;
-        short[] mono = new short[frames];
-        for (int i = 0; i < frames; i++) {
-            int s = 0;
-            for (int k = 0; k < ch; k++) s += buf[i * ch + k];
-            mono[i] = (short) (s / ch);
-        }
-        if (rate == RATE) return mono;
-        int outLen = (int) ((long) frames * RATE / rate);
-        short[] out = new short[outLen];
-        for (int i = 0; i < outLen; i++) {
-            double pos = (double) i * rate / RATE;
-            int a = (int) pos;
-            int b = Math.min(a + 1, frames - 1);
-            double fr = pos - a;
-            out[i] = (short) (mono[Math.min(a, frames - 1)] * (1 - fr) + mono[b] * fr);
-        }
-        return out;
     }
 }

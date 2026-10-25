@@ -16,8 +16,11 @@ import rikka.shizuku.Shizuku;
 
 public class MainActivity extends Activity {
     private LinearLayout status, list, monitorRow, folderBar;
-    private TextView countLabel;
+    private TextView countLabel, addBtn;
+    private LinearLayout playerHolder;
     private String curFolder = SoundStore.ALL;
+    private String lastMusicName;
+    private final Runnable musicL = this::onMusicChange;
 
     private final Shizuku.OnRequestPermissionResultListener permL = (code, result) -> {
         if (result == PackageManager.PERMISSION_GRANTED) Client.bind(this);
@@ -35,10 +38,26 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), dp(28), dp(18), dp(28));
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Ui.BG);
         sv.setFillViewport(true);
         sv.addView(root);
-        setContentView(sv);
+
+        // Screen = scrolling content + (only in the 🎵 folder) the music player pinned at the bottom.
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setBackgroundColor(Ui.BG);
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
+        playerHolder = new LinearLayout(this);
+        playerHolder.setOrientation(LinearLayout.VERTICAL);
+        android.graphics.drawable.GradientDrawable pbg = new android.graphics.drawable.GradientDrawable();
+        pbg.setColor(Ui.CARD);
+        float rr = dp(22);
+        pbg.setCornerRadii(new float[]{rr, rr, rr, rr, 0, 0, 0, 0});
+        playerHolder.setBackground(pbg);
+        playerHolder.setPadding(dp(20), dp(14), dp(20), dp(14));
+        playerHolder.addView(new MusicUi.Player(this, false), new LinearLayout.LayoutParams(-1, -2));
+        playerHolder.setVisibility(View.GONE);
+        outer.addView(playerHolder, new LinearLayout.LayoutParams(-1, -2));
+        setContentView(outer);
 
         TextView title = text("GameVoice", 28, Ui.TEXT, true);
         root.addView(title);
@@ -102,6 +121,7 @@ public class MainActivity extends Activity {
         countLabel = text("আমার ভয়েস", 15, Ui.TEXT, true);
         head.addView(countLabel, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView add = Ui.pill(this, "＋ যোগ করো", Ui.GREEN, 0xFF06210F, 13);
+        addBtn = add;
         add.setPadding(dp(14), dp(8), dp(14), dp(8));
         add.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -131,6 +151,7 @@ public class MainActivity extends Activity {
 
         Shizuku.addRequestPermissionResultListener(permL);
         Client.onChange = () -> runOnUiThread(this::refresh);
+        MusicPlayer.addListener(musicL);
         requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
         refresh();
     }
@@ -268,6 +289,16 @@ public class MainActivity extends Activity {
         buildFolderBar();
 
         list.removeAllViews();
+        boolean music = SoundStore.MUSIC.equals(curFolder);
+        playerHolder.setVisibility(music ? View.VISIBLE : View.GONE);
+        addBtn.setText(music ? "＋ মিউজিক যোগ করো" : "＋ যোগ করো");
+        if (music) {
+            java.util.List<File> songs = SoundStore.listMusic(this);
+            countLabel.setText(SoundStore.MUSIC_EMOJI + " " + SoundStore.MUSIC_NAME + " (" + songs.size() + ")");
+            lastMusicName = MusicPlayer.cur == null ? null : MusicPlayer.cur.getName();
+            buildMusicList(songs);
+            return;
+        }
         java.util.List<File> files = SoundStore.list(this, curFolder);
         SoundStore.Folder cur = SoundStore.folder(this, curFolder);
         countLabel.setText((cur == null ? "আমার ভয়েস" : cur.emoji + " " + cur.name) + " (" + files.size() + ")");
@@ -286,6 +317,12 @@ public class MainActivity extends Activity {
     private void buildFolderBar() {
         folderBar.removeAllViews();
         folderBar.addView(folderTab("📂", "সব", curFolder.isEmpty(), v -> selectFolder(SoundStore.ALL), null));
+        // Permanent music folder: always here, cannot be renamed or deleted. Long-press = volume only.
+        int mv = SoundStore.sendVolume(this, SoundStore.MUSIC);
+        folderBar.addView(folderTab(SoundStore.MUSIC_EMOJI,
+                SoundStore.MUSIC_NAME + (mv < 100 ? " · " + mv + "%" : ""),
+                SoundStore.MUSIC.equals(curFolder),
+                v -> selectFolder(SoundStore.MUSIC), v -> musicVolumeDialog()));
         for (SoundStore.Folder f : SoundStore.folders(this)) {
             int fv = SoundStore.sendVolume(this, f.id); // show "· 50%" on folders that are turned down
             folderBar.addView(folderTab(f.emoji, f.name + (fv < 100 ? " · " + fv + "%" : ""), f.id.equals(curFolder),
@@ -297,6 +334,14 @@ public class MainActivity extends Activity {
         folderBar.addView(add);
 
         SoundStore.Folder cur = SoundStore.folder(this, curFolder);
+        if (SoundStore.MUSIC.equals(curFolder)) {
+            TextView vb = Ui.pill(this, "🔊 ভলিউম", 0xFF2A3050, Ui.TEXT, 13);
+            vb.setPadding(dp(14), dp(9), dp(14), dp(9));
+            vb.setOnClickListener(v -> musicVolumeDialog());
+            LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(-2, -2);
+            vlp.leftMargin = dp(8);
+            folderBar.addView(vb, vlp);
+        }
         if (cur != null) {
             TextView edit = Ui.pill(this, "✎ এডিট", 0xFF2A3050, Ui.TEXT, 13);
             edit.setPadding(dp(14), dp(9), dp(14), dp(9));
@@ -409,6 +454,124 @@ public class MainActivity extends Activity {
         b.show();
     }
 
+    // --------------------------------------------------------------- music
+
+    private void onMusicChange() {
+        // The player view updates itself; only the song list needs a redraw when the current song changes.
+        String n = MusicPlayer.cur == null ? null : MusicPlayer.cur.getName();
+        if (java.util.Objects.equals(n, lastMusicName)) return;
+        lastMusicName = n;
+        if (SoundStore.MUSIC.equals(curFolder)) {
+            list.removeAllViews();
+            buildMusicList(SoundStore.listMusic(this));
+        }
+    }
+
+    private void buildMusicList(java.util.List<File> songs) {
+        if (songs.isEmpty()) {
+            TextView e = text("এখনো কোনো মিউজিক নেই। উপরের “＋ মিউজিক যোগ করো” চাপুন, ফোন থেকে গান বেছে নিন, তারপর এখান থেকে বাজান। "
+                    + "এই ফোল্ডারে শুধু মিউজিক থাকে, ভয়েসের সাথে মেশে না।", 13, Ui.MUTED, false);
+            e.setPadding(0, dp(12), 0, 0);
+            list.addView(e);
+        }
+        for (File f : songs) list.addView(musicRow(f));
+    }
+
+    private View musicRow(final File f) {
+        final String label = SoundStore.musicLabel(this, f);
+        boolean isCur = MusicPlayer.cur != null && MusicPlayer.cur.getName().equals(f.getName());
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        android.graphics.drawable.GradientDrawable bg = Ui.round(Ui.CARD, this, 14);
+        if (isCur) bg.setStroke(dp(1.5f), Ui.ACCENT);
+        r.setBackground(bg);
+        r.setPadding(dp(12), dp(10), dp(8), dp(10));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(8);
+        r.setLayoutParams(lp);
+
+        TextView g = Ui.pill(this, isCur ? "♫" : "♪", isCur ? Ui.ACCENT : 0xFF2A3050, 0xFFFFFFFF, 18);
+        r.addView(g, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+        TextView n = text(label, 15, isCur ? Ui.ACCENT : Ui.TEXT, isCur);
+        n.setMaxLines(1);
+        n.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, -2, 1f);
+        nlp.leftMargin = dp(12);
+        r.addView(n, nlp);
+
+        TextView edit = Ui.pill(this, "✎", 0xFF2A3050, Ui.TEXT, 15);
+        edit.setOnClickListener(v -> renameMusic(f));
+        r.addView(edit, small());
+        TextView del = Ui.pill(this, "✕", 0xFF2A3050, Ui.RED, 14);
+        del.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setMessage("“" + label + "” মুছে ফেলবেন?")
+                .setPositiveButton("মুছুন", (d, w) -> {
+                    MusicPlayer.removeIfCurrent(f);
+                    SoundStore.deleteMusic(this, f);
+                    refresh();
+                })
+                .setNegativeButton("না", null).show());
+        r.addView(del, small());
+
+        r.setOnClickListener(v -> MusicPlayer.play(this, f));
+        return r;
+    }
+
+    private void renameMusic(File f) {
+        EditText et = new EditText(this);
+        et.setText(SoundStore.musicLabel(this, f));
+        et.setSelectAllOnFocus(true);
+        et.setSingleLine(true);
+        et.setInputType(InputType.TYPE_CLASS_TEXT);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("নাম বদলান")
+                .setView(et)
+                .setPositiveButton("সেভ", (d, w) -> {
+                    SoundStore.setMusicLabel(this, f, et.getText().toString());
+                    refresh();
+                })
+                .setNegativeButton("বাতিল", null).show();
+    }
+
+    /** The music folder has no name / icon to edit; only how loud the other side hears it. */
+    private void musicVolumeDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), dp(4));
+        final int[] vol = {SoundStore.sendVolume(this, SoundStore.MUSIC)};
+        final TextView volLab = text("", 14, Ui.TEXT, true);
+        box.addView(volLab);
+        TextView hint = text("অপর প্রান্তের মানুষ মিউজিক কত জোরে শুনবে। আপনার নিজের শোনা আলাদা (মূল পর্দার “নিজে শুনুন”)। "
+                + "গান চলা অবস্থায় বদলালে সাথে সাথে কাজ করে।", 11, Ui.MUTED, false);
+        hint.setPadding(0, dp(2), 0, dp(6));
+        box.addView(hint);
+        final SeekBar sb = new SeekBar(this);
+        sb.setMax(20);
+        sb.setMin(1);
+        sb.setProgress(Math.max(1, Math.round(vol[0] / 5f)));
+        volLab.setText("🔊 অপর প্রান্তে: " + (sb.getProgress() * 5) + "%");
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean user) {
+                vol[0] = p * 5;
+                volLab.setText("🔊 অপর প্রান্তে: " + vol[0] + "%");
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {}
+        });
+        box.addView(sb, new LinearLayout.LayoutParams(-1, -2));
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(SoundStore.MUSIC_EMOJI + " " + SoundStore.MUSIC_NAME + " ফোল্ডার")
+                .setView(box)
+                .setPositiveButton("সেভ", (d, w) -> {
+                    SoundStore.setSendVolume(this, SoundStore.MUSIC, vol[0]);
+                    MusicPlayer.onSendVolumeChanged(this);
+                    refresh();
+                })
+                .setNegativeButton("বাতিল", null).show();
+    }
+
     /** Move one voice into a folder (or out of all folders). */
     private void moveDialog(final File f) {
         final java.util.List<SoundStore.Folder> fl = SoundStore.folders(this);
@@ -517,10 +680,16 @@ public class MainActivity extends Activity {
         super.onActivityResult(rc, res, d);
         if (rc == 10 && res == RESULT_OK && d != null) {
             try {
-                // New voices go straight into the folder that is open right now.
-                if (d.getClipData() != null)
-                    for (int i = 0; i < d.getClipData().getItemCount(); i++) SoundStore.add(this, d.getClipData().getItemAt(i).getUri(), curFolder);
-                else if (d.getData() != null) SoundStore.add(this, d.getData(), curFolder);
+                // New voices go straight into the folder that is open right now (songs into 🎵).
+                boolean music = SoundStore.MUSIC.equals(curFolder);
+                if (d.getClipData() != null) {
+                    for (int i = 0; i < d.getClipData().getItemCount(); i++) {
+                        Uri u = d.getClipData().getItemAt(i).getUri();
+                        if (music) SoundStore.addMusic(this, u); else SoundStore.add(this, u, curFolder);
+                    }
+                } else if (d.getData() != null) {
+                    if (music) SoundStore.addMusic(this, d.getData()); else SoundStore.add(this, d.getData(), curFolder);
+                }
             } catch (Throwable e) { toast("ERR: " + e); }
             refresh();
         }
@@ -528,6 +697,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         Shizuku.removeRequestPermissionResultListener(permL);
+        MusicPlayer.removeListener(musicL);
         super.onDestroy();
     }
 }
