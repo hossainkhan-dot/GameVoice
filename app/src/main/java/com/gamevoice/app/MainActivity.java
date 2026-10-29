@@ -179,7 +179,7 @@ public class MainActivity extends Activity {
         Shizuku.addRequestPermissionResultListener(permL);
         Client.onChange = () -> runOnUiThread(this::refresh);
         MusicPlayer.addListener(musicL);
-        requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+        requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS", "android.permission.RECORD_AUDIO"}, 1);
         refresh();
     }
 
@@ -1009,6 +1009,7 @@ public class MainActivity extends Activity {
                 Client.bind(getApplicationContext());
             }
         } catch (Throwable ignored) {}
+        Client.ensureMic(this, false);
         refresh();
     }
 

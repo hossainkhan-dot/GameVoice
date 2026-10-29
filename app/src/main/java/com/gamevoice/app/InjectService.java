@@ -40,35 +40,11 @@ public class InjectService extends IUserService.Stub {
                 return t;
             });
 
-    // ---- your real voice: mic injection hides the real microphone, so it is read here and mixed back in ----
-    private volatile boolean micWanted = true;
+    // ---- your real voice: relayed by the app through a pipe (MicRelay), mixed back in by the mixer ----
     private volatile MicPass mic;
     private volatile String micReport = "";
 
     public InjectService() {}
-
-    /** Opens / closes the real-microphone pass-through to match micWanted. Needs the shell identity. */
-    private synchronized String syncMic() {
-        if (track == null) return "ok";
-        if (!micWanted) {
-            MicPass m = mic;
-            mic = null;
-            if (m != null) m.close();
-            micReport = "বন্ধ (আপনার ইচ্ছায়)";
-            return "ok";
-        }
-        if (mic != null) return "ok";
-        try {
-            mic = MicPass.open();
-            micReport = "ok";
-            tuneBuffer();
-            wakeMixer();
-            return "ok";
-        } catch (Throwable e) {
-            micReport = "ERR: " + root(e);
-            return micReport;
-        }
-    }
 
     private void wakeMixer() {
         synchronized (mixLock) {
@@ -87,8 +63,7 @@ public class InjectService extends IUserService.Stub {
         // We run inside a Binder transaction from the app (uid != shell). AudioPolicy checks
         // MODIFY_AUDIO_ROUTING against the *calling* uid, so reset identity to the shell process.
         long tok = Binder.clearCallingIdentity();
-        try { initInner(); syncMic(); } finally { Binder.restoreCallingIdentity(tok); }
-        startMixer(); // runs from now on: your own voice has to keep flowing even when no sound is playing
+        try { initInner(); } finally { Binder.restoreCallingIdentity(tok); }
     }
 
     private static Throwable root(Throwable e) {
@@ -457,10 +432,27 @@ public class InjectService extends IUserService.Stub {
 
     // --------------------------------------------------------------- your voice
 
-    @Override public String micPassthrough(boolean on) {
-        micWanted = on;
-        long tok = Binder.clearCallingIdentity();
-        try { return syncMic(); } finally { Binder.restoreCallingIdentity(tok); }
+    /** Starts (pfd != null) or stops (null) mixing in your real voice, which the app streams through the pipe. */
+    @Override public String micStream(ParcelFileDescriptor pfd) {
+        MicPass old = mic;
+        mic = null;
+        if (old != null) old.close();
+        if (pfd == null) { micReport = "বন্ধ"; return "ok"; }
+        try {
+            init();
+        } catch (Throwable e) {
+            try { pfd.close(); } catch (Throwable ignored) {}
+            micReport = "ERR: " + root(e);
+            return micReport;
+        }
+        final MicPass[] self = new MicPass[1];
+        MicPass m = MicPass.fromPipe(pfd, () -> { if (mic == self[0]) mic = null; });
+        self[0] = m;
+        mic = m;
+        micReport = "ok (অ্যাপ থেকে মাইক আসছে)";
+        tuneBuffer();
+        wakeMixer();
+        return "ok";
     }
 
     // ------------------------------------------------------------ app capture

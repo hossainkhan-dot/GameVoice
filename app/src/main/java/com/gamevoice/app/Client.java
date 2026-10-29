@@ -32,15 +32,15 @@ public class Client {
                 if (onChange != null) onChange.run();
                 // Apps that were left switched on in the "অ্যাপ" folder start streaming again.
                 Context c = appCtx;
-                IUserService sv = svc;
-                if (c != null && sv != null && Boolean.TRUE.equals(injectOk)) {
-                    try { sv.micPassthrough(SoundStore.getMicOn(c)); } catch (Throwable ignored) {}
+                if (c != null && svc != null && Boolean.TRUE.equals(injectOk)) {
+                    ensureMic(c, false);
                     AppAudio.sync(c);
                 }
             }, "gv-ready").start();
         }
         @Override public void onServiceDisconnected(ComponentName n) {
             svc = null;
+            MicRelay.stop();
             injectOk = null;
             if (onChange != null) onChange.run();
         }
@@ -51,24 +51,27 @@ public class Client {
         if (svc != null) return;
         Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                 new ComponentName(ctx.getPackageName(), InjectService.class.getName()))
-                .daemon(false).processNameSuffix("inject").version(7); // bumped: your real microphone is mixed back in (MicPass)
+                .daemon(false).processNameSuffix("inject").version(8); // bumped: your real microphone is relayed from the app (MicRelay -> MicPass)
         Shizuku.bindUserService(args, conn);
     }
 
     /** Switch for "my own microphone voice also goes to the game". */
     public static void setMic(final Context ctx, final boolean on) {
         SoundStore.setMicOn(ctx, on);
-        final IUserService s = svc;
-        if (s == null) return;
+        if (on) ensureMic(ctx, true); else MicRelay.stop();
+    }
+
+    /** Starts the real-microphone relay when it is wanted and possible (floating button on, Shizuku connected). */
+    public static void ensureMic(final Context ctx, final boolean showError) {
+        if (!SoundStore.getMicOn(ctx) || svc == null || !FloatingService.running || MicRelay.isRunning()) return;
+        final Context app = ctx.getApplicationContext();
         new Thread(() -> {
-            try {
-                final String r = s.micPassthrough(on);
-                if (on && !"ok".equals(r)) {
-                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
-                            android.widget.Toast.makeText(ctx, "মাইক চালু হয়নি: " + r, android.widget.Toast.LENGTH_LONG).show());
-                }
-            } catch (Throwable ignored) {}
-        }, "gv-mic-switch").start();
+            final String r = MicRelay.start(app);
+            if (showError && !"ok".equals(r)) {
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
+                        android.widget.Toast.makeText(app, "মাইক চালু হয়নি: " + r, android.widget.Toast.LENGTH_LONG).show());
+            }
+        }, "gv-mic-start").start();
     }
 
     /** Sends the sound to everyone (mic injection) and, if enabled, also to your own speaker. */

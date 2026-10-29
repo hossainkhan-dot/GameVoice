@@ -23,6 +23,8 @@ import java.util.List;
  * sound shortcuts below. Long-press a sound or a folder to edit it.
  */
 public class FloatingService extends Service {
+    /** True while the floating button is on (the real-microphone relay only runs then). */
+    public static volatile boolean running;
     private static final int COLS = 3;
 
     private WindowManager wm;
@@ -56,7 +58,17 @@ public class FloatingService extends Service {
         getSystemService(NotificationManager.class).createNotificationChannel(ch);
         Notification n = new Notification.Builder(this, "gv")
                 .setContentTitle("GameVoice চালু").setSmallIcon(android.R.drawable.ic_btn_speak_now).build();
-        startForeground(1, n);
+        try {
+            int type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+            // The microphone type may only be requested once the microphone permission is granted.
+            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+                type |= android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+            startForeground(1, n, type);
+        } catch (Throwable e) {
+            startForeground(1, n);
+        }
+        running = true;
+        Client.ensureMic(this, true);
 
         Client.loadMonitor(this);
         wm = getSystemService(WindowManager.class);
@@ -817,6 +829,8 @@ public class FloatingService extends Service {
     }
 
     @Override public void onDestroy() {
+        running = false;
+        MicRelay.stop();
         MusicPlayer.removeListener(musicL);
         try { if (panel != null) wm.removeView(panel); } catch (Throwable ignored) {}
         try { if (bubble != null) wm.removeView(bubble); } catch (Throwable ignored) {}

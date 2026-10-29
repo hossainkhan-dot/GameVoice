@@ -23,6 +23,6 @@ interface IUserService {
     /** One line per app: "uid|ok/err|peakPercent|message" (uid -1 = general problem). */
     String captureStatus() = 15;
     // ---- your own voice ----
-    /** true: your real microphone is mixed into what the game hears (default). Returns "ok" or the error. */
-    String micPassthrough(boolean on) = 16;
+    /** Your real microphone, relayed by the app as raw mono 48 kHz 16-bit PCM through a pipe (null = stop). */
+    String micStream(in ParcelFileDescriptor pfd) = 16;
 }

@@ -1,23 +1,21 @@
 package com.gamevoice.app;
 
-import android.content.Context;
-import android.media.AudioFormat;
-import android.media.AudioRecord;
+import android.os.ParcelFileDescriptor;
+import java.io.InputStream;
 
 /**
  * Runs in the Shizuku (shell) process. While mic injection is active Android sends EVERY app's microphone
- * capture to our mix, so your real voice would never reach the game. This reads the real microphone
- * with a capture source the mix does not match (VOICE_PERFORMANCE) and hands it to the mixer, which
- * adds it to the injected sounds. Result: your voice + voice packs + music + chosen apps, all together.
+ * capture to our mix, so your real voice would never reach the game. The GameVoice app records the real
+ * microphone itself (see MicRelay) and streams it here through a pipe; the mixer adds it to the
+ * injected sounds. Result: your voice + voice packs + music + chosen apps, all together.
  */
 final class MicPass {
-    static final int RATE = 48000;
-    private static final int RING = RATE / 2;     // 0.5 s
+    private static final int RING = 48000 / 2;    // 0.5 s
     private static final int CHUNK = 960;         // 20 ms
-    private static final int VOICE_PERFORMANCE = 10;
 
-    private AudioRecord rec;
+    private InputStream in;
     private Thread reader;
+    private Runnable onEnd;
     private volatile boolean alive = true;
     private final short[] ring = new short[RING];
     private int rd, cnt;
@@ -25,40 +23,12 @@ final class MicPass {
 
     private MicPass() {}
 
-    /** Opens the real microphone. Must run with the shell identity (the caller clears the Binder identity). */
-    static MicPass open() throws Exception {
-        Class<?> at = Class.forName("android.app.ActivityThread");
-        Object th = at.getMethod("currentActivityThread").invoke(null);
-        if (th == null) th = at.getMethod("systemMain").invoke(null);
-        Context sys = (Context) at.getMethod("getSystemContext").invoke(th);
-        Context ctx;
-        try { ctx = sys.createPackageContext("com.android.shell", 0); } catch (Throwable e) { ctx = sys; }
-
-        AudioFormat fmt = new AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(RATE)
-                .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build();
-        int min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        AudioRecord.Builder b = new AudioRecord.Builder()
-                .setAudioSource(VOICE_PERFORMANCE)
-                .setAudioFormat(fmt)
-                .setBufferSizeInBytes(Math.max(min * 2, CHUNK * 2 * 4));
-        // Android 12+ wants to know which package is recording; there is no app context in this process.
-        try { AudioRecord.Builder.class.getMethod("setContext", Context.class).invoke(b, ctx); }
-        catch (Throwable ignored) {}
-        AudioRecord r = b.build();
-        try {
-            if (r.getState() != AudioRecord.STATE_INITIALIZED) throw new IllegalStateException("AudioRecord not initialised");
-            r.startRecording();
-            if (r.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
-                throw new IllegalStateException("microphone did not start");
-        } catch (Throwable e) {
-            try { r.release(); } catch (Throwable ignored) {}
-            throw e instanceof Exception ? (Exception) e : new IllegalStateException(e);
-        }
+    static MicPass fromPipe(ParcelFileDescriptor pfd, Runnable onEnd) {
         MicPass m = new MicPass();
-        m.rec = r;
+        m.in = new ParcelFileDescriptor.AutoCloseInputStream(pfd);
+        m.onEnd = onEnd;
         m.reader = new Thread(m::readLoop, "gv-mic");
+        m.reader.setDaemon(true);
         m.reader.setPriority(Thread.MAX_PRIORITY);
         m.reader.start();
         return m;
@@ -66,17 +36,26 @@ final class MicPass {
 
     private void readLoop() {
         try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO); } catch (Throwable ignored) {}
-        short[] in = new short[CHUNK];
-        while (alive) {
-            int n;
-            try { n = rec.read(in, 0, in.length, AudioRecord.READ_BLOCKING); }
-            catch (Throwable e) { break; }
-            if (n <= 0) {
-                if (!alive) break;
-                try { Thread.sleep(10); } catch (InterruptedException e) { break; }
-                continue;
+        byte[] buf = new byte[CHUNK * 2];
+        short[] pcm = new short[CHUNK];
+        try {
+            while (alive) {
+                int got = 0;
+                while (got < buf.length) {
+                    int r = in.read(buf, got, buf.length - got);
+                    if (r < 0) throw new java.io.EOFException();
+                    got += r;
+                }
+                for (int i = 0; i < CHUNK; i++) pcm[i] = (short) ((buf[2 * i] & 0xFF) | (buf[2 * i + 1] << 8));
+                push(pcm, CHUNK);
             }
-            push(in, n);
+        } catch (Throwable ignored) {
+        } finally {
+            if (alive) {                       // the app closed the pipe (or died): tell the service
+                alive = false;
+                Runnable r = onEnd;
+                if (r != null) r.run();
+            }
         }
     }
 
@@ -115,8 +94,6 @@ final class MicPass {
 
     void close() {
         alive = false;
-        try { rec.stop(); } catch (Throwable ignored) {}
-        if (reader != null) reader.interrupt();
-        try { rec.release(); } catch (Throwable ignored) {}
+        try { in.close(); } catch (Throwable ignored) {}
     }
 }
