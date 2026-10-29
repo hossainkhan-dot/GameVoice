@@ -31,7 +31,23 @@ public class InjectService extends IUserService.Stub {
     private volatile float musicGain = 1f;
     private Thread mixer;
 
+    // ---- sound of chosen apps (captured by AppCapture, pulled by the mixer) ----
+    private final AppCapture capture = new AppCapture(this::wakeMixer);
+    private final java.util.concurrent.ExecutorService capExec =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "gv-capture-ctl");
+                t.setDaemon(true);
+                return t;
+            });
+
     public InjectService() {}
+
+    private void wakeMixer() {
+        synchronized (mixLock) {
+            startMixer();
+            mixLock.notifyAll();
+        }
+    }
 
     private Object keepPolicy; // strong ref so the registered policy is never GC'd
     private Object keepMgr;    // AudioManager used to register it (needed to unregister on failure)
@@ -178,7 +194,7 @@ public class InjectService extends IUserService.Stub {
         return e;
     }
 
-    @Override public void destroy() { stop(); musicStop(); System.exit(0); }
+    @Override public void destroy() { stop(); musicStop(); capture.closeAll(); System.exit(0); }
 
     // ------------------------------------------------------------------ mixer
 
@@ -191,12 +207,13 @@ public class InjectService extends IUserService.Stub {
         }
     }
 
-    private boolean hasWork() { return clip != null || (music != null && musicState == 2); }
+    private boolean hasWork() { return clip != null || (music != null && musicState == 2) || capture.active(); }
 
     private void mixLoop() {
         try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO); } catch (Throwable ignored) {}
         final int N = 960; // 20 ms @ 48 kHz
         short[] out = new short[N];
+        int[] acc = new int[N];
         while (true) {
             synchronized (mixLock) {
                 while (!hasWork()) {
@@ -208,8 +225,11 @@ public class InjectService extends IUserService.Stub {
                     int v = 0;
                     if (c != null && clipOff + i < c.length) v += c[clipOff + i];
                     if (m != null && musicOff + i < m.length) v += (int) (m[musicOff + i] * g);
-                    out[i] = (short) Math.max(-32768, Math.min(32767, v));
+                    acc[i] = v;
                 }
+                // sound of the apps switched on in the "অ্যাপ" folder (each already has its own percentage)
+                for (AppCapture.Stream cs : capture.snapshot()) cs.mixInto(acc, N);
+                for (int i = 0; i < N; i++) out[i] = (short) Math.max(-32768, Math.min(32767, acc[i]));
                 if (c != null) {
                     clipOff += N;
                     if (clipOff >= c.length) clip = null;
@@ -220,8 +240,12 @@ public class InjectService extends IUserService.Stub {
                 }
             }
             AudioTrack t = track;
+            if (t == null) { // mic injection not ready: never spin
+                try { Thread.sleep(20); } catch (InterruptedException e) { return; }
+                continue;
+            }
             int off = 0;
-            while (t != null && off < N) {
+            while (off < N) {
                 int w = t.write(out, off, N - off, AudioTrack.WRITE_BLOCKING);
                 if (w < 0) {
                     lastError = "ERR: AudioTrack.write=" + w;
@@ -253,7 +277,7 @@ public class InjectService extends IUserService.Stub {
             clip = null;
             musicRunning = music != null && musicState == 2;
         }
-        if (!musicRunning) flushTrack();
+        if (!musicRunning && !capture.active()) flushTrack();
     }
 
     /**
@@ -391,6 +415,40 @@ public class InjectService extends IUserService.Stub {
             }
             return new long[]{musicState, pos, dur};
         }
+    }
+
+    // ------------------------------------------------------------ app capture
+
+    /** Switches the captured apps to exactly this set. Returns at once; the work runs on its own thread. */
+    @Override public String captureSet(int[] uids, int[] volumesPct) {
+        final int[] u = uids == null ? new int[0] : uids.clone();
+        final int[] v = volumesPct == null ? new int[0] : volumesPct.clone();
+        capExec.execute(() -> {
+            try {
+                if (u.length > 0) { init(); startMixer(); }
+            } catch (Throwable e) {
+                capture.fail("মাইকে ঢোকানো চালু হয়নি: " + root(e));
+                return;
+            }
+            try {
+                capture.set(u, v);
+                if (capture.active()) tuneBuffer();
+            } catch (Throwable e) {
+                capture.fail("ERR: " + root(e));
+            }
+        });
+        return "ok";
+    }
+
+    @Override public void captureVolume(int uid, int volumePct) { capture.setGain(uid, volumePct); }
+
+    @Override public String captureStatus() { return capture.status(); }
+
+    /** A smaller mic-track buffer keeps the apps' sound close to real time (about 120 ms). */
+    private void tuneBuffer() {
+        AudioTrack t = track;
+        if (t == null) return;
+        try { t.setBufferSizeInFrames(Math.min(t.getBufferCapacityInFrames(), RATE / 8)); } catch (Throwable ignored) {}
     }
 
     // ----------------------------------------------------------------- decode

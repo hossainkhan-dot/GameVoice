@@ -277,6 +277,7 @@ public class FloatingService extends Service {
         panel.addView(monitorRow());
         panel.addView(folderBar());
         if (SoundStore.MUSIC.equals(curFolder)) { renderMusic(); return; }
+        if (SoundStore.APPS.equals(curFolder)) { renderApps(); return; }
 
         List<File> files = SoundStore.list(this, curFolder);
         scroller = new Ui.MaxHeightScroll(this);
@@ -364,6 +365,85 @@ public class FloatingService extends Service {
         }
     }
 
+    /** Panel content for the 📱 folder: every added app with an on/off switch and its own % slider. */
+    private void renderApps() {
+        scroller = new Ui.MaxHeightScroll(this);
+        scroller.maxPx = (int) (sh * 0.45f);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        scroller.addView(col);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
+        slp.topMargin = Ui.dp(this, 8);
+        panel.addView(scroller, slp);
+
+        List<SoundStore.AppItem> items = SoundStore.apps(this);
+        if (items.isEmpty()) {
+            TextView t = new TextView(this);
+            t.setText("কোনো অ্যাপ নেই।\nঅ্যাপ খুলে 📱 ফোল্ডারে অ্যাপ যোগ করুন।");
+            t.setTextColor(Ui.MUTED);
+            t.setTextSize(12);
+            t.setGravity(Gravity.CENTER);
+            t.setPadding(0, Ui.dp(this, 12), 0, Ui.dp(this, 12));
+            col.addView(t);
+            return;
+        }
+        for (SoundStore.AppItem a : items) col.addView(appRow(a));
+        TextView hint = new TextView(this);
+        hint.setText("অন করা অ্যাপের সাউন্ডই শুধু অপর প্রান্তে যায়");
+        hint.setTextColor(Ui.MUTED);
+        hint.setTextSize(9);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, Ui.dp(this, 6), 0, 0);
+        panel.addView(hint);
+    }
+
+    private View appRow(final SoundStore.AppItem a) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.VERTICAL);
+        r.setBackground(Ui.round(0xFF1E2440, this, 12));
+        int p = Ui.dp(this, 8);
+        r.setPadding(p, Ui.dp(this, 6), p, Ui.dp(this, 4));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = Ui.dp(this, 5);
+        r.setLayoutParams(lp);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView ic = new ImageView(this);
+        try { ic.setImageDrawable(getPackageManager().getApplicationIcon(a.pkg)); }
+        catch (Throwable e) { ic.setImageResource(android.R.drawable.sym_def_app_icon); }
+        top.addView(ic, new LinearLayout.LayoutParams(Ui.dp(this, 26), Ui.dp(this, 26)));
+
+        final TextView n = new TextView(this);
+        n.setText(SoundStore.appLabel(this, a.pkg));
+        n.setTextColor(a.on ? Ui.ACCENT : 0xFFDCE0EE);
+        n.setTextSize(12);
+        n.setTypeface(a.on ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
+        n.setSingleLine(true);
+        n.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, -2, 1f);
+        nlp.leftMargin = Ui.dp(this, 8);
+        top.addView(n, nlp);
+
+        Switch sw = new Switch(this);
+        sw.setChecked(a.on);
+        sw.setOnCheckedChangeListener((b, on) -> {
+            SoundStore.setAppOn(this, a.pkg, on);
+            n.setTextColor(on ? Ui.ACCENT : 0xFFDCE0EE);
+            n.setTypeface(on ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
+            AppAudio.sync(this);
+        });
+        top.addView(sw, new LinearLayout.LayoutParams(-2, -2));
+        r.addView(top);
+
+        r.addView(Ui.volumeSlider(this, "🔊 ", a.vol, true, false, true, pct -> {
+            SoundStore.setAppVol(this, a.pkg, pct);
+            AppAudio.setVolume(this, a.pkg, pct);
+        }), new LinearLayout.LayoutParams(-1, -2));
+        return r;
+    }
+
     private View header() {
         LinearLayout h = new LinearLayout(this);
         h.setOrientation(LinearLayout.HORIZONTAL);
@@ -408,6 +488,9 @@ public class FloatingService extends Service {
         // Permanent music folder (no edit / delete here; its volume is set in the app).
         row.addView(tab(SoundStore.MUSIC_EMOJI, SoundStore.MUSIC_NAME, SoundStore.MUSIC.equals(curFolder),
                 v -> selectFolder(SoundStore.MUSIC), null));
+        // Permanent apps folder (apps are added in the app itself).
+        row.addView(tab(SoundStore.APPS_EMOJI, SoundStore.APPS_NAME, SoundStore.APPS.equals(curFolder),
+                v -> selectFolder(SoundStore.APPS), null));
         for (SoundStore.Folder f : SoundStore.folders(this)) {
             row.addView(tab(f.emoji, f.name, f.id.equals(curFolder),
                     v -> selectFolder(f.id), v -> showFolderEditor(f)));

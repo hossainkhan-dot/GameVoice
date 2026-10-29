@@ -21,6 +21,17 @@ public class MainActivity extends Activity {
     private String curFolder = SoundStore.ALL;
     private String lastMusicName;
     private final Runnable musicL = this::onMusicChange;
+    // "📱 অ্যাপ" folder: live status text per app row, refreshed while that folder is open
+    private final android.os.Handler uiH = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final java.util.Map<String, TextView> appStatus = new java.util.HashMap<>();
+    private boolean appPolling;
+    private final Runnable appPoll = new Runnable() {
+        @Override public void run() {
+            if (!appPolling) return;
+            AppAudio.status(m -> runOnUiThread(() -> { if (appPolling) applyAppStatus(m); }));
+            uiH.postDelayed(this, 900);
+        }
+    };
 
     private final Shizuku.OnRequestPermissionResultListener permL = (code, result) -> {
         if (result == PackageManager.PERMISSION_GRANTED) Client.bind(this);
@@ -123,6 +134,7 @@ public class MainActivity extends Activity {
         addBtn = add;
         add.setPadding(dp(14), dp(8), dp(14), dp(8));
         add.setOnClickListener(v -> {
+            if (SoundStore.APPS.equals(curFolder)) { showAppPicker(); return; }
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             i.setType("audio/*");
             i.addCategory(Intent.CATEGORY_OPENABLE);
@@ -344,8 +356,17 @@ public class MainActivity extends Activity {
 
         list.removeAllViews();
         boolean music = SoundStore.MUSIC.equals(curFolder);
+        boolean apps = SoundStore.APPS.equals(curFolder);
         playerHolder.setVisibility(music ? View.VISIBLE : View.GONE);
-        addBtn.setText(music ? "＋ মিউজিক যোগ করো" : "＋ যোগ করো");
+        addBtn.setText(music ? "＋ মিউজিক যোগ করো" : apps ? "＋ অ্যাপ যোগ করো" : "＋ যোগ করো");
+        if (apps) {
+            java.util.List<SoundStore.AppItem> items = SoundStore.apps(this);
+            countLabel.setText(SoundStore.APPS_EMOJI + " " + SoundStore.APPS_NAME + " (" + items.size() + ")");
+            buildAppsList(items);
+            startAppPoll();
+            return;
+        }
+        stopAppPoll();
         if (music) {
             java.util.List<File> songs = SoundStore.listMusic(this);
             countLabel.setText(SoundStore.MUSIC_EMOJI + " " + SoundStore.MUSIC_NAME + " (" + songs.size() + ")");
@@ -377,6 +398,9 @@ public class MainActivity extends Activity {
                 SoundStore.MUSIC_NAME + (mv < 100 ? " · " + mv + "%" : ""),
                 SoundStore.MUSIC.equals(curFolder),
                 v -> selectFolder(SoundStore.MUSIC), v -> musicVolumeDialog()));
+        // Permanent apps folder: the sound of chosen phone apps goes to the other side.
+        folderBar.addView(folderTab(SoundStore.APPS_EMOJI, SoundStore.APPS_NAME,
+                SoundStore.APPS.equals(curFolder), v -> selectFolder(SoundStore.APPS), null));
         for (SoundStore.Folder f : SoundStore.folders(this)) {
             int fv = SoundStore.sendVolume(this, f.id); // show "· 50%" on folders that are turned down
             folderBar.addView(folderTab(f.emoji, f.name + (fv < 100 ? " · " + fv + "%" : ""), f.id.equals(curFolder),
@@ -530,6 +554,214 @@ public class MainActivity extends Activity {
         r.setPadding(0, dp(8), 0, dp(4));
         r.addView(t, new LinearLayout.LayoutParams(-2, -2));
         r.addView(hint, new LinearLayout.LayoutParams(0, -2, 1f));
+        return r;
+    }
+
+    // ---------------------------------------------------------------- apps
+
+    private void startAppPoll() {
+        if (appPolling) return;
+        appPolling = true;
+        uiH.post(appPoll);
+    }
+
+    private void stopAppPoll() {
+        appPolling = false;
+        uiH.removeCallbacks(appPoll);
+    }
+
+    private void buildAppsList(java.util.List<SoundStore.AppItem> items) {
+        appStatus.clear();
+        TextView hint = text("যে অ্যাপ চালু (অন) করবেন শুধু তার সাউন্ড গেমের অপর প্রান্তে যাবে, প্রতিটার পাশের স্লাইডারে কত % যাবে তা ঠিক করুন। "
+                + "অ্যাপটি আলাদা করে ফোনে চালান (যেমন গেমের সাইডবার থেকে খুলে)। আপনি যে গেম খেলছেন তার সাউন্ড যায় না, "
+                + "তবে চাইলে সেই গেমটাও এখানে যোগ করে অন করতে পারেন।", 12, Ui.MUTED, false);
+        hint.setPadding(0, dp(10), 0, dp(4));
+        list.addView(hint);
+        if (items.isEmpty()) {
+            TextView e = text("এখনো কোনো অ্যাপ নেই। উপরের “＋ অ্যাপ যোগ করো” চাপুন।", 13, Ui.MUTED, false);
+            e.setPadding(0, dp(12), 0, 0);
+            list.addView(e);
+        }
+        for (SoundStore.AppItem a : items) list.addView(appRow(a));
+    }
+
+    private View appRow(final SoundStore.AppItem a) {
+        final boolean installed = SoundStore.appUid(this, a.pkg) >= 0;
+        final String label = SoundStore.appLabel(this, a.pkg);
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.VERTICAL);
+        r.setBackground(Ui.round(Ui.CARD, this, 14));
+        r.setPadding(dp(12), dp(10), dp(8), dp(10));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(8);
+        r.setLayoutParams(lp);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView ic = new ImageView(this);
+        try { ic.setImageDrawable(getPackageManager().getApplicationIcon(a.pkg)); }
+        catch (Throwable e) { ic.setImageResource(android.R.drawable.sym_def_app_icon); }
+        top.addView(ic, new LinearLayout.LayoutParams(dp(38), dp(38)));
+
+        final TextView n = text(installed ? label : label + " (ইনস্টল নেই)", 15, a.on ? Ui.ACCENT : Ui.TEXT, a.on);
+        n.setMaxLines(1);
+        n.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, -2, 1f);
+        nlp.leftMargin = dp(12);
+        top.addView(n, nlp);
+
+        final TextView st = text("", 11, Ui.MUTED, false);
+        st.setVisibility(a.on ? View.VISIBLE : View.GONE);
+        st.setText(a.on ? "⏳ চালু হচ্ছে…" : "");
+        appStatus.put(a.pkg, st);
+
+        Switch sw = new Switch(this);
+        sw.setChecked(a.on);
+        sw.setOnCheckedChangeListener((b, on) -> {
+            SoundStore.setAppOn(this, a.pkg, on);
+            n.setTextColor(on ? Ui.ACCENT : Ui.TEXT);
+            n.setTypeface(on ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            st.setVisibility(on ? View.VISIBLE : View.GONE);
+            st.setText(on ? "⏳ চালু হচ্ছে…" : "");
+            AppAudio.sync(this);
+        });
+        top.addView(sw, new LinearLayout.LayoutParams(-2, -2));
+
+        TextView del = Ui.pill(this, "✕", 0xFF2A3050, Ui.RED, 14);
+        del.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setMessage("“" + label + "” তালিকা থেকে সরাবেন?")
+                .setPositiveButton("সরান", (d, w) -> {
+                    SoundStore.removeApp(this, a.pkg);
+                    AppAudio.sync(this);
+                    refresh();
+                })
+                .setNegativeButton("না", null).show());
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dp(34), dp(34));
+        dlp.leftMargin = dp(8);
+        top.addView(del, dlp);
+        r.addView(top);
+
+        LinearLayout sl = Ui.volumeSlider(this, "🔊 ", a.vol, false, false, false, pct -> {
+            SoundStore.setAppVol(this, a.pkg, pct);
+            AppAudio.setVolume(this, a.pkg, pct);
+        });
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
+        slp.topMargin = dp(6);
+        slp.rightMargin = dp(8);
+        r.addView(sl, slp);
+        r.addView(st);
+        return r;
+    }
+
+    /** Shows what the Shizuku service reports for every switched-on app. */
+    private void applyAppStatus(java.util.Map<Integer, String[]> m) {
+        String[] general = m.get(-1);
+        for (SoundStore.AppItem a : SoundStore.apps(this)) {
+            TextView t = appStatus.get(a.pkg);
+            if (t == null || !a.on) continue;
+            String[] e = m.get(SoundStore.appUid(this, a.pkg));
+            String txt;
+            if (Client.svc == null) txt = "⚠ Shizuku সংযুক্ত নয়";
+            else if (e != null && "ok".equals(e[0])) {
+                int peak = 0;
+                try { peak = Integer.parseInt(e[1]); } catch (NumberFormatException ignored) {}
+                txt = peak > 0 ? "🟢 সাউন্ড যাচ্ছে" : "⚪ চালু আছে, অ্যাপে এখন সাউন্ড বাজান";
+            } else if (e != null) txt = "❌ " + e[2];
+            else if (general != null) txt = "❌ " + general[2];
+            else txt = "⏳ চালু হচ্ছে…";
+            t.setText(txt);
+        }
+    }
+
+    private static class AppEntry {
+        String pkg, label;
+        android.graphics.drawable.Drawable icon;
+    }
+
+    /** Lists every installed app with a launcher icon (except GameVoice and the ones already added). */
+    private void showAppPicker() {
+        toast("অ্যাপের তালিকা আনা হচ্ছে…");
+        final android.content.pm.PackageManager pm = getPackageManager();
+        new Thread(() -> {
+            java.util.Set<String> have = new java.util.HashSet<>();
+            for (SoundStore.AppItem a : SoundStore.apps(this)) have.add(a.pkg);
+            java.util.Map<String, AppEntry> byPkg = new java.util.LinkedHashMap<>();
+            Intent q = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+            for (android.content.pm.ResolveInfo ri : pm.queryIntentActivities(q, 0)) {
+                String p = ri.activityInfo.packageName;
+                if (p.equals(getPackageName()) || have.contains(p) || byPkg.containsKey(p)) continue;
+                AppEntry e = new AppEntry();
+                e.pkg = p;
+                e.label = String.valueOf(ri.loadLabel(pm));
+                try { e.icon = ri.loadIcon(pm); } catch (Throwable t) { e.icon = null; }
+                byPkg.put(p, e);
+            }
+            final java.util.List<AppEntry> all = new java.util.ArrayList<>(byPkg.values());
+            java.util.Collections.sort(all, (x, y) -> x.label.compareToIgnoreCase(y.label));
+            runOnUiThread(() -> { if (!isFinishing()) buildPicker(all); });
+        }, "gv-app-list").start();
+    }
+
+    private void buildPicker(final java.util.List<AppEntry> all) {
+        if (all.isEmpty()) { toast("যোগ করার মতো আর কোনো অ্যাপ নেই"); return; }
+        final java.util.Set<String> picked = new java.util.LinkedHashSet<>();
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(4));
+        final EditText search = new EditText(this);
+        search.setHint("🔍 খুঁজুন…");
+        search.setSingleLine(true);
+        search.setInputType(InputType.TYPE_CLASS_TEXT);
+        box.addView(search, new LinearLayout.LayoutParams(-1, -2));
+        final ScrollView sv = new ScrollView(this);
+        final LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        sv.addView(col);
+        box.addView(sv, new LinearLayout.LayoutParams(-1, dp(360)));
+        final Runnable fill = () -> {
+            col.removeAllViews();
+            String qs = search.getText().toString().trim().toLowerCase();
+            for (AppEntry e : all) {
+                if (!qs.isEmpty() && !e.label.toLowerCase().contains(qs)) continue;
+                col.addView(pickRow(e, picked));
+            }
+        };
+        search.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable e) { fill.run(); }
+        });
+        fill.run();
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(SoundStore.APPS_EMOJI + " অ্যাপ বাছুন")
+                .setView(box)
+                .setPositiveButton("যোগ করো", (d, w) -> {
+                    if (!picked.isEmpty()) { SoundStore.addApps(this, picked); refresh(); }
+                })
+                .setNegativeButton("বাতিল", null).show();
+    }
+
+    private View pickRow(final AppEntry e, final java.util.Set<String> picked) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setPadding(dp(4), dp(7), dp(4), dp(7));
+        ImageView ic = new ImageView(this);
+        if (e.icon != null) ic.setImageDrawable(e.icon);
+        r.addView(ic, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        TextView n = text(e.label, 14, Ui.TEXT, false);
+        n.setMaxLines(1);
+        n.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0, -2, 1f);
+        nlp.leftMargin = dp(12);
+        r.addView(n, nlp);
+        final TextView ck = text(picked.contains(e.pkg) ? "☑" : "☐", 20, Ui.ACCENT, true);
+        r.addView(ck);
+        r.setOnClickListener(v -> {
+            if (!picked.remove(e.pkg)) picked.add(e.pkg);
+            ck.setText(picked.contains(e.pkg) ? "☑" : "☐");
+        });
         return r;
     }
 
@@ -747,6 +979,11 @@ public class MainActivity extends Activity {
                 .setNegativeButton("বাতিল", null).show();
     }
 
+    @Override protected void onPause() {
+        stopAppPoll();
+        super.onPause();
+    }
+
     @Override protected void onResume() {
         super.onResume();
         // Recover the Shizuku user-service binding when returning to the app.
@@ -780,6 +1017,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         Shizuku.removeRequestPermissionResultListener(permL);
+        stopAppPoll();
         MusicPlayer.removeListener(musicL);
         super.onDestroy();
     }

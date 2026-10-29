@@ -16,4 +16,10 @@ interface IUserService {
     void musicVolume(int volumePct) = 11;
     /** {state, positionMs, durationMs}; state: 0 idle, 1 loading, 2 playing, 3 paused, 4 ended */
     long[] musicInfo() = 12;
+    // ---- app audio capture (sound of chosen apps -> the other side) ----
+    /** Replaces the set of captured apps (uid + 1..100 % each). Returns at once; see captureStatus(). */
+    String captureSet(in int[] uids, in int[] volumesPct) = 13;
+    void captureVolume(int uid, int volumePct) = 14;
+    /** One line per app: "uid|ok/err|peakPercent|message" (uid -1 = general problem). */
+    String captureStatus() = 15;
 }

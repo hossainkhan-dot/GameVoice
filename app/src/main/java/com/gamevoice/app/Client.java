@@ -13,6 +13,7 @@ import rikka.shizuku.Shizuku;
 public class Client {
     public static volatile IUserService svc;
     public static Runnable onChange;
+    private static volatile Context appCtx;   // for restoring the switched-on apps after (re)connecting
 
     private static MediaPlayer mon;     // local "self-monitor" player (your own speaker)
     private static int monPct = 30;
@@ -29,6 +30,9 @@ public class Client {
             new Thread(() -> {
                 try { injectOk = svc.ready(); } catch (Throwable e) { injectOk = null; }
                 if (onChange != null) onChange.run();
+                // Apps that were left switched on in the "অ্যাপ" folder start streaming again.
+                Context c = appCtx;
+                if (c != null && Boolean.TRUE.equals(injectOk)) AppAudio.sync(c);
             }, "gv-ready").start();
         }
         @Override public void onServiceDisconnected(ComponentName n) {
@@ -39,10 +43,11 @@ public class Client {
     };
 
     public static void bind(Context ctx) {
+        appCtx = ctx.getApplicationContext();
         if (svc != null) return;
         Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                 new ComponentName(ctx.getPackageName(), InjectService.class.getName()))
-                .daemon(false).processNameSuffix("inject").version(5); // bumped: the service now reads pre-decoded music (PcmDecoder)
+                .daemon(false).processNameSuffix("inject").version(6); // bumped: the service can now capture the sound of chosen apps (AppCapture)
         Shizuku.bindUserService(args, conn);
     }
 

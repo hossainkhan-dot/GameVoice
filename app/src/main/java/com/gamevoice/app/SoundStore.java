@@ -25,6 +25,21 @@ public class SoundStore {
     /** Default "how loud the other side hears music" (%). Songs are much louder than short voices. */
     public static final int MUSIC_DEFAULT_VOL = 70;
 
+    /** The permanent apps folder: the sound of chosen phone apps is sent to the other side. */
+    public static final String APPS = "apps";
+    public static final String APPS_EMOJI = "📱";
+    public static final String APPS_NAME = "অ্যাপ";
+    /** Default "how loud the other side hears an app" (%). */
+    public static final int APP_DEFAULT_VOL = 70;
+
+    /** One app in the apps folder. */
+    public static class AppItem {
+        public final String pkg;
+        public final boolean on;
+        public final int vol;
+        AppItem(String pkg, boolean on, int vol) { this.pkg = pkg; this.on = on; this.vol = vol; }
+    }
+
     /** A voice-pack folder. The icon is an emoji, never a picture / letter. */
     public static class Folder {
         public final String id, name, emoji;
@@ -198,11 +213,85 @@ public class SoundStore {
     public static String selected(Context c) {
         String s = prefs(c).getString("sel", ALL);
         if (MUSIC.equals(s)) return MUSIC;
+        if (APPS.equals(s)) return APPS;
         return (s.isEmpty() || folder(c, s) == null) ? ALL : s;
     }
 
     public static void setSelected(Context c, String id) {
         prefs(c).edit().putString("sel", id == null ? ALL : id).apply();
+    }
+
+    // ------------------------------------------------------------------ apps
+
+    public static List<AppItem> apps(Context c) {
+        List<AppItem> l = new ArrayList<>();
+        try {
+            JSONArray a = new JSONArray(prefs(c).getString("apps_list", "[]"));
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.getJSONObject(i);
+                l.add(new AppItem(o.getString("pkg"), o.optBoolean("on", false),
+                        Math.max(1, Math.min(100, o.optInt("vol", APP_DEFAULT_VOL)))));
+            }
+        } catch (Exception ignored) {}
+        return l;
+    }
+
+    private static void saveApps(Context c, List<AppItem> l) {
+        JSONArray a = new JSONArray();
+        try {
+            for (AppItem it : l) {
+                JSONObject o = new JSONObject();
+                o.put("pkg", it.pkg);
+                o.put("on", it.on);
+                o.put("vol", it.vol);
+                a.put(o);
+            }
+        } catch (Exception ignored) {}
+        prefs(c).edit().putString("apps_list", a.toString()).apply();
+    }
+
+    /** Adds apps (switched off, default volume). Already listed ones are left alone. */
+    public static void addApps(Context c, java.util.Collection<String> pkgs) {
+        List<AppItem> l = apps(c);
+        Set<String> have = new HashSet<>();
+        for (AppItem a : l) have.add(a.pkg);
+        for (String p : pkgs) if (have.add(p)) l.add(new AppItem(p, false, APP_DEFAULT_VOL));
+        saveApps(c, l);
+    }
+
+    public static void removeApp(Context c, String pkg) {
+        List<AppItem> l = apps(c);
+        for (Iterator<AppItem> it = l.iterator(); it.hasNext(); ) if (it.next().pkg.equals(pkg)) it.remove();
+        saveApps(c, l);
+    }
+
+    public static void setAppOn(Context c, String pkg, boolean on) {
+        List<AppItem> l = apps(c);
+        for (int i = 0; i < l.size(); i++)
+            if (l.get(i).pkg.equals(pkg)) l.set(i, new AppItem(pkg, on, l.get(i).vol));
+        saveApps(c, l);
+    }
+
+    public static void setAppVol(Context c, String pkg, int pct) {
+        List<AppItem> l = apps(c);
+        for (int i = 0; i < l.size(); i++)
+            if (l.get(i).pkg.equals(pkg))
+                l.set(i, new AppItem(pkg, l.get(i).on, Math.max(1, Math.min(100, pct))));
+        saveApps(c, l);
+    }
+
+    /** The app's name as the phone shows it; the package name when it is no longer installed. */
+    public static String appLabel(Context c, String pkg) {
+        try {
+            android.content.pm.PackageManager pm = c.getPackageManager();
+            return String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
+        } catch (Throwable e) { return pkg; }
+    }
+
+    /** Linux uid of the app, or -1 when it is not installed. */
+    public static int appUid(Context c, String pkg) {
+        try { return c.getPackageManager().getApplicationInfo(pkg, 0).uid; }
+        catch (Throwable e) { return -1; }
     }
 
     // ------------------------------------------------------ bubble position
