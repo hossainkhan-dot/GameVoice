@@ -131,7 +131,7 @@ public class MainActivity extends Activity {
         micRow.addView(micTxt, new LinearLayout.LayoutParams(0, -2, 1f));
         Switch micSw = new Switch(this);
         micSw.setChecked(SoundStore.getMicOn(this));
-        micSw.setOnCheckedChangeListener((bv, on) -> Client.setMic(this, on));
+        micSw.setOnCheckedChangeListener((bv, micOn) -> Client.setMic(this, micOn));
         micRow.addView(micSw);
         LinearLayout.LayoutParams mrlp = new LinearLayout.LayoutParams(-1, -2);
         mrlp.topMargin = dp(10);
