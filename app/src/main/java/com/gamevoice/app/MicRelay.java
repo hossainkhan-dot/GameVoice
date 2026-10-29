@@ -24,6 +24,8 @@ public final class MicRelay {
     private static final int VOICE_PERFORMANCE = 10;
     private static Thread th;
     private static volatile boolean run;
+    /** true = your voice is muted: the relay keeps running but sends silence (so switching is instant and reliable). */
+    public static volatile boolean muted;
 
     public static synchronized boolean isRunning() { return th != null && th.isAlive(); }
 
@@ -35,6 +37,7 @@ public final class MicRelay {
             return "মাইক্রোফোন পারমিশন দেওয়া হয়নি (অ্যাপ সেটিংস > পারমিশন)";
         final IUserService s = Client.svc;
         if (s == null) return "Shizuku সংযুক্ত নয়";
+        muted = !SoundStore.getMicOn(c);
 
         AudioRecord r = null;
         ParcelFileDescriptor[] p = null;
@@ -80,9 +83,11 @@ public final class MicRelay {
                 int n = rec.read(in, 0, in.length, AudioRecord.READ_BLOCKING);
                 if (n < 0) break;
                 if (n == 0) continue;
+                final boolean mute = muted;
                 for (int i = 0; i < n; i++) {
-                    by[2 * i] = (byte) in[i];
-                    by[2 * i + 1] = (byte) (in[i] >> 8);
+                    short v = mute ? 0 : in[i];
+                    by[2 * i] = (byte) v;
+                    by[2 * i + 1] = (byte) (v >> 8);
                 }
                 out.write(by, 0, n * 2);
             }

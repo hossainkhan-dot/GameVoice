@@ -499,6 +499,13 @@ public class FloatingService extends Service {
         LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(s, s);
         glp.leftMargin = Ui.dp(this, 6);
         h.addView(gear, glp);
+
+        // Far right corner: close the whole floating button at once.
+        TextView close = Ui.pill(this, "✕", 0xFF2A3050, Ui.RED, 13);
+        close.setOnClickListener(v -> stopSelf());
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(s, s);
+        clp.leftMargin = Ui.dp(this, 6);
+        h.addView(close, clp);
         return h;
     }
 

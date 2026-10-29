@@ -58,12 +58,13 @@ public class Client {
     /** Switch for "my own microphone voice also goes to the game". */
     public static void setMic(final Context ctx, final boolean on) {
         SoundStore.setMicOn(ctx, on);
-        if (on) ensureMic(ctx, true); else MicRelay.stop();
+        MicRelay.muted = !on;           // the relay keeps running; muting just sends silence
+        if (on) ensureMic(ctx, true);   // (starts it if it is not running yet)
     }
 
     /** Starts the real-microphone relay when it is wanted and possible (floating button on, Shizuku connected). */
     public static void ensureMic(final Context ctx, final boolean showError) {
-        if (!SoundStore.getMicOn(ctx) || svc == null || !FloatingService.running || MicRelay.isRunning()) return;
+        if (svc == null || !FloatingService.running || MicRelay.isRunning()) return;
         final Context app = ctx.getApplicationContext();
         new Thread(() -> {
             final String r = MicRelay.start(app);
