@@ -40,7 +40,35 @@ public class InjectService extends IUserService.Stub {
                 return t;
             });
 
+    // ---- your real voice: mic injection hides the real microphone, so it is read here and mixed back in ----
+    private volatile boolean micWanted = true;
+    private volatile MicPass mic;
+    private volatile String micReport = "";
+
     public InjectService() {}
+
+    /** Opens / closes the real-microphone pass-through to match micWanted. Needs the shell identity. */
+    private synchronized String syncMic() {
+        if (track == null) return "ok";
+        if (!micWanted) {
+            MicPass m = mic;
+            mic = null;
+            if (m != null) m.close();
+            micReport = "বন্ধ (আপনার ইচ্ছায়)";
+            return "ok";
+        }
+        if (mic != null) return "ok";
+        try {
+            mic = MicPass.open();
+            micReport = "ok";
+            tuneBuffer();
+            wakeMixer();
+            return "ok";
+        } catch (Throwable e) {
+            micReport = "ERR: " + root(e);
+            return micReport;
+        }
+    }
 
     private void wakeMixer() {
         synchronized (mixLock) {
@@ -59,7 +87,8 @@ public class InjectService extends IUserService.Stub {
         // We run inside a Binder transaction from the app (uid != shell). AudioPolicy checks
         // MODIFY_AUDIO_ROUTING against the *calling* uid, so reset identity to the shell process.
         long tok = Binder.clearCallingIdentity();
-        try { initInner(); } finally { Binder.restoreCallingIdentity(tok); }
+        try { initInner(); syncMic(); } finally { Binder.restoreCallingIdentity(tok); }
+        startMixer(); // runs from now on: your own voice has to keep flowing even when no sound is playing
     }
 
     private static Throwable root(Throwable e) {
@@ -178,6 +207,7 @@ public class InjectService extends IUserService.Stub {
         } catch (Throwable e) {
             sb.append("✘ মাইক ইনজেকশন চালু হয়নি:\n").append(initReport.isEmpty() ? String.valueOf(root(e)) : initReport);
         }
+        if (!micReport.isEmpty()) sb.append("\n\nআপনার নিজের মাইক: ").append(micReport);
         if (!lastError.isEmpty()) sb.append("\n\nশেষ বাজানোর ত্রুটি: ").append(lastError);
         return sb.toString();
     }
@@ -194,7 +224,13 @@ public class InjectService extends IUserService.Stub {
         return e;
     }
 
-    @Override public void destroy() { stop(); musicStop(); capture.closeAll(); System.exit(0); }
+    @Override public void destroy() {
+        stop(); musicStop(); capture.closeAll();
+        MicPass m = mic;
+        mic = null;
+        if (m != null) m.close();
+        System.exit(0);
+    }
 
     // ------------------------------------------------------------------ mixer
 
@@ -207,7 +243,7 @@ public class InjectService extends IUserService.Stub {
         }
     }
 
-    private boolean hasWork() { return clip != null || (music != null && musicState == 2) || capture.active(); }
+    private boolean hasWork() { return clip != null || (music != null && musicState == 2) || capture.active() || mic != null; }
 
     private void mixLoop() {
         try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO); } catch (Throwable ignored) {}
@@ -229,6 +265,8 @@ public class InjectService extends IUserService.Stub {
                 }
                 // sound of the apps switched on in the "অ্যাপ" folder (each already has its own percentage)
                 for (AppCapture.Stream cs : capture.snapshot()) cs.mixInto(acc, N);
+                final MicPass mp = mic;
+                if (mp != null) mp.mixInto(acc, N);
                 for (int i = 0; i < N; i++) out[i] = (short) Math.max(-32768, Math.min(32767, acc[i]));
                 if (c != null) {
                     clipOff += N;
@@ -277,7 +315,7 @@ public class InjectService extends IUserService.Stub {
             clip = null;
             musicRunning = music != null && musicState == 2;
         }
-        if (!musicRunning && !capture.active()) flushTrack();
+        if (!musicRunning && !capture.active() && mic == null) flushTrack();
     }
 
     /**
@@ -415,6 +453,14 @@ public class InjectService extends IUserService.Stub {
             }
             return new long[]{musicState, pos, dur};
         }
+    }
+
+    // --------------------------------------------------------------- your voice
+
+    @Override public String micPassthrough(boolean on) {
+        micWanted = on;
+        long tok = Binder.clearCallingIdentity();
+        try { return syncMic(); } finally { Binder.restoreCallingIdentity(tok); }
     }
 
     // ------------------------------------------------------------ app capture

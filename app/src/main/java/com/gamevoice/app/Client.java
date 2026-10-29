@@ -32,7 +32,11 @@ public class Client {
                 if (onChange != null) onChange.run();
                 // Apps that were left switched on in the "অ্যাপ" folder start streaming again.
                 Context c = appCtx;
-                if (c != null && Boolean.TRUE.equals(injectOk)) AppAudio.sync(c);
+                IUserService sv = svc;
+                if (c != null && sv != null && Boolean.TRUE.equals(injectOk)) {
+                    try { sv.micPassthrough(SoundStore.getMicOn(c)); } catch (Throwable ignored) {}
+                    AppAudio.sync(c);
+                }
             }, "gv-ready").start();
         }
         @Override public void onServiceDisconnected(ComponentName n) {
@@ -47,8 +51,24 @@ public class Client {
         if (svc != null) return;
         Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                 new ComponentName(ctx.getPackageName(), InjectService.class.getName()))
-                .daemon(false).processNameSuffix("inject").version(6); // bumped: the service can now capture the sound of chosen apps (AppCapture)
+                .daemon(false).processNameSuffix("inject").version(7); // bumped: your real microphone is mixed back in (MicPass)
         Shizuku.bindUserService(args, conn);
+    }
+
+    /** Switch for "my own microphone voice also goes to the game". */
+    public static void setMic(final Context ctx, final boolean on) {
+        SoundStore.setMicOn(ctx, on);
+        final IUserService s = svc;
+        if (s == null) return;
+        new Thread(() -> {
+            try {
+                final String r = s.micPassthrough(on);
+                if (on && !"ok".equals(r)) {
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
+                            android.widget.Toast.makeText(ctx, "মাইক চালু হয়নি: " + r, android.widget.Toast.LENGTH_LONG).show());
+                }
+            } catch (Throwable ignored) {}
+        }, "gv-mic-switch").start();
     }
 
     /** Sends the sound to everyone (mic injection) and, if enabled, also to your own speaker. */

@@ -22,4 +22,7 @@ interface IUserService {
     void captureVolume(int uid, int volumePct) = 14;
     /** One line per app: "uid|ok/err|peakPercent|message" (uid -1 = general problem). */
     String captureStatus() = 15;
+    // ---- your own voice ----
+    /** true: your real microphone is mixed into what the game hears (default). Returns "ok" or the error. */
+    String micPassthrough(boolean on) = 16;
 }

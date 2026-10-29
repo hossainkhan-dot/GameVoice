@@ -444,6 +444,12 @@ public class FloatingService extends Service {
         return r;
     }
 
+    private void styleMic(TextView t, boolean on) {
+        t.setText(on ? "🎙" : "🔇");
+        t.setBackground(Ui.round(on ? Ui.GREEN : 0xFF3A4165, this, 100));
+        t.setAlpha(on ? 1f : 0.8f);
+    }
+
     private View header() {
         LinearLayout h = new LinearLayout(this);
         h.setOrientation(LinearLayout.HORIZONTAL);
@@ -456,6 +462,18 @@ public class FloatingService extends Service {
         h.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
 
         int s = Ui.dp(this, 28);
+        // Green = your own microphone goes to the game, grey = muted (tap to switch).
+        final TextView mic = Ui.pill(this, "🎙", Ui.GREEN, 0xFF06210F, 13);
+        styleMic(mic, SoundStore.getMicOn(this));
+        mic.setOnClickListener(v -> {
+            boolean on = !SoundStore.getMicOn(this);
+            Client.setMic(this, on);
+            styleMic(mic, on);
+        });
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(s, s);
+        mlp.rightMargin = Ui.dp(this, 6);
+        h.addView(mic, mlp);
+
         TextView stop = Ui.pill(this, "■", Ui.RED, 0xFFFFFFFF, 12);
         stop.setOnClickListener(v -> Client.stop());
         h.addView(stop, new LinearLayout.LayoutParams(s, s));

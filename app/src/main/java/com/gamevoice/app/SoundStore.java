@@ -107,6 +107,10 @@ public class SoundStore {
                 .remove("fav:" + f.getName()).apply();
     }
 
+    /** Should your own microphone voice also reach the game (default yes)? */
+    public static boolean getMicOn(Context c) { return prefs(c).getBoolean("micpass", true); }
+    public static void setMicOn(Context c, boolean on) { prefs(c).edit().putBoolean("micpass", on).apply(); }
+
     public static int getMonitor(Context c) { return prefs(c).getInt("monitor", 30); }
     public static void setMonitor(Context c, int pct) { prefs(c).edit().putInt("monitor", pct).apply(); }
 

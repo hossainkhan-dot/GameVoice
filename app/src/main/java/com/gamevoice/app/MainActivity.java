@@ -121,6 +121,22 @@ public class MainActivity extends Activity {
         root.addView(Ui.volumeSlider(this, "🔊 ", Client.getMonitor(), false, true, false,
                 pct -> Client.setMonitor(this, pct)));
 
+        // your own voice (microphone) also goes to the game
+        LinearLayout micRow = new LinearLayout(this);
+        micRow.setOrientation(LinearLayout.HORIZONTAL);
+        micRow.setGravity(Gravity.CENTER_VERTICAL);
+        micRow.setBackground(Ui.round(Ui.CARD, this, 14));
+        micRow.setPadding(dp(14), dp(10), dp(14), dp(10));
+        TextView micTxt = text("🎙 আমার নিজের মাইকের কথাও যাবে", 14, Ui.TEXT, false);
+        micRow.addView(micTxt, new LinearLayout.LayoutParams(0, -2, 1f));
+        Switch micSw = new Switch(this);
+        micSw.setChecked(SoundStore.getMicOn(this));
+        micSw.setOnCheckedChangeListener((bv, on) -> Client.setMic(this, on));
+        micRow.addView(micSw);
+        LinearLayout.LayoutParams mrlp = new LinearLayout.LayoutParams(-1, -2);
+        mrlp.topMargin = dp(10);
+        root.addView(micRow, mrlp);
+
         // sounds
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
