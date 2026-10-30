@@ -121,21 +121,6 @@ public class MainActivity extends Activity {
         root.addView(Ui.volumeSlider(this, "🔊 ", Client.getMonitor(), false, true, false,
                 pct -> Client.setMonitor(this, pct)));
 
-        // your own voice (microphone) also goes to the game
-        LinearLayout micRow = new LinearLayout(this);
-        micRow.setOrientation(LinearLayout.HORIZONTAL);
-        micRow.setGravity(Gravity.CENTER_VERTICAL);
-        micRow.setBackground(Ui.round(Ui.CARD, this, 14));
-        micRow.setPadding(dp(14), dp(10), dp(14), dp(10));
-        TextView micTxt = text("🎙 আমার নিজের মাইকের কথাও যাবে", 14, Ui.TEXT, false);
-        micRow.addView(micTxt, new LinearLayout.LayoutParams(0, -2, 1f));
-        Switch micSw = new Switch(this);
-        micSw.setChecked(SoundStore.getMicOn(this));
-        micSw.setOnCheckedChangeListener((bv, micOn) -> Client.setMic(this, micOn));
-        micRow.addView(micSw);
-        LinearLayout.LayoutParams mrlp = new LinearLayout.LayoutParams(-1, -2);
-        mrlp.topMargin = dp(10);
-        root.addView(micRow, mrlp);
 
         // sounds
         LinearLayout head = new LinearLayout(this);
@@ -179,7 +164,7 @@ public class MainActivity extends Activity {
         Shizuku.addRequestPermissionResultListener(permL);
         Client.onChange = () -> runOnUiThread(this::refresh);
         MusicPlayer.addListener(musicL);
-        requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS", "android.permission.RECORD_AUDIO"}, 1);
+        requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
         refresh();
     }
 
@@ -1009,7 +994,6 @@ public class MainActivity extends Activity {
                 Client.bind(getApplicationContext());
             }
         } catch (Throwable ignored) {}
-        Client.ensureMic(this, false);
         refresh();
     }
 

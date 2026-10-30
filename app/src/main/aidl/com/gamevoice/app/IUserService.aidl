@@ -22,7 +22,4 @@ interface IUserService {
     void captureVolume(int uid, int volumePct) = 14;
     /** One line per app: "uid|ok/err|peakPercent|message" (uid -1 = general problem). */
     String captureStatus() = 15;
-    // ---- your own voice ----
-    /** Your real microphone, relayed by the app as raw mono 48 kHz 16-bit PCM through a pipe (null = stop). */
-    String micStream(in ParcelFileDescriptor pfd) = 16;
 }

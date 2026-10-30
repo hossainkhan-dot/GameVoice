@@ -40,10 +40,6 @@ public class InjectService extends IUserService.Stub {
                 return t;
             });
 
-    // ---- your real voice: relayed by the app through a pipe (MicRelay), mixed back in by the mixer ----
-    private volatile MicPass mic;
-    private volatile String micReport = "";
-
     public InjectService() {}
 
     private void wakeMixer() {
@@ -182,7 +178,6 @@ public class InjectService extends IUserService.Stub {
         } catch (Throwable e) {
             sb.append("✘ মাইক ইনজেকশন চালু হয়নি:\n").append(initReport.isEmpty() ? String.valueOf(root(e)) : initReport);
         }
-        if (!micReport.isEmpty()) sb.append("\n\nআপনার নিজের মাইক: ").append(micReport);
         if (!lastError.isEmpty()) sb.append("\n\nশেষ বাজানোর ত্রুটি: ").append(lastError);
         return sb.toString();
     }
@@ -201,9 +196,6 @@ public class InjectService extends IUserService.Stub {
 
     @Override public void destroy() {
         stop(); musicStop(); capture.closeAll();
-        MicPass m = mic;
-        mic = null;
-        if (m != null) m.close();
         System.exit(0);
     }
 
@@ -218,14 +210,16 @@ public class InjectService extends IUserService.Stub {
         }
     }
 
-    private boolean hasWork() { return clip != null || (music != null && musicState == 2) || capture.active() || mic != null; }
+    private boolean hasWork() { return clip != null || (music != null && musicState == 2) || capture.active(); }
 
     private void mixLoop() {
         try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO); } catch (Throwable ignored) {}
         final int N = 960; // 20 ms @ 48 kHz
         short[] out = new short[N];
         int[] acc = new int[N];
+        int quiet = 1000;               // chunks in a row where only silence came from the chosen apps
         while (true) {
+            final boolean write;
             synchronized (mixLock) {
                 while (!hasWork()) {
                     try { mixLock.wait(); } catch (InterruptedException e) { return; }
@@ -240,9 +234,20 @@ public class InjectService extends IUserService.Stub {
                 }
                 // sound of the apps switched on in the "অ্যাপ" folder (each already has its own percentage)
                 for (AppCapture.Stream cs : capture.snapshot()) cs.mixInto(acc, N);
-                final MicPass mp = mic;
-                if (mp != null) mp.mixInto(acc, N);
                 for (int i = 0; i < N; i++) out[i] = (short) Math.max(-32768, Math.min(32767, acc[i]));
+                // Clips and music are always written, exactly as before. Apps alone are written only while they
+                // really make sound (+ 200 ms tail): a track that is fed silence all the time would cover your
+                // own microphone, so when the apps are quiet nothing is written and your voice goes straight through.
+                boolean audible = c != null || m != null;
+                if (audible) {
+                    quiet = 0;
+                } else {
+                    int pk = 0;
+                    for (int i = 0; i < N; i++) { int a = out[i] < 0 ? -out[i] : out[i]; if (a > pk) pk = a; }
+                    if (pk > 2) quiet = 0; else if (quiet < 1000) quiet++;
+                    audible = quiet < 10;
+                }
+                write = audible;
                 if (c != null) {
                     clipOff += N;
                     if (clipOff >= c.length) clip = null;
@@ -251,6 +256,10 @@ public class InjectService extends IUserService.Stub {
                     musicOff += N;
                     if (musicOff >= m.length) { musicOff = m.length; musicState = 4; }
                 }
+            }
+            if (!write) { // only quiet apps: leave the injection track idle, keep time with the apps' stream
+                try { Thread.sleep(20); } catch (InterruptedException e) { return; }
+                continue;
             }
             AudioTrack t = track;
             if (t == null) { // mic injection not ready: never spin
@@ -290,7 +299,7 @@ public class InjectService extends IUserService.Stub {
             clip = null;
             musicRunning = music != null && musicState == 2;
         }
-        if (!musicRunning && !capture.active() && mic == null) flushTrack();
+        if (!musicRunning && !capture.active()) flushTrack();
     }
 
     /**
@@ -428,31 +437,6 @@ public class InjectService extends IUserService.Stub {
             }
             return new long[]{musicState, pos, dur};
         }
-    }
-
-    // --------------------------------------------------------------- your voice
-
-    /** Starts (pfd != null) or stops (null) mixing in your real voice, which the app streams through the pipe. */
-    @Override public String micStream(ParcelFileDescriptor pfd) {
-        MicPass old = mic;
-        mic = null;
-        if (old != null) old.close();
-        if (pfd == null) { micReport = "বন্ধ"; return "ok"; }
-        try {
-            init();
-        } catch (Throwable e) {
-            try { pfd.close(); } catch (Throwable ignored) {}
-            micReport = "ERR: " + root(e);
-            return micReport;
-        }
-        final MicPass[] self = new MicPass[1];
-        MicPass m = MicPass.fromPipe(pfd, () -> { if (mic == self[0]) mic = null; });
-        self[0] = m;
-        mic = m;
-        micReport = "ok (অ্যাপ থেকে মাইক আসছে)";
-        tuneBuffer();
-        wakeMixer();
-        return "ok";
     }
 
     // ------------------------------------------------------------ app capture

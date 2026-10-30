@@ -23,8 +23,6 @@ import java.util.List;
  * sound shortcuts below. Long-press a sound or a folder to edit it.
  */
 public class FloatingService extends Service {
-    /** True while the floating button is on (the real-microphone relay only runs then). */
-    public static volatile boolean running;
     private static final int COLS = 3;
 
     private WindowManager wm;
@@ -58,17 +56,7 @@ public class FloatingService extends Service {
         getSystemService(NotificationManager.class).createNotificationChannel(ch);
         Notification n = new Notification.Builder(this, "gv")
                 .setContentTitle("GameVoice চালু").setSmallIcon(android.R.drawable.ic_btn_speak_now).build();
-        try {
-            int type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
-            // The microphone type may only be requested once the microphone permission is granted.
-            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED)
-                type |= android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
-            startForeground(1, n, type);
-        } catch (Throwable e) {
-            startForeground(1, n);
-        }
-        running = true;
-        Client.ensureMic(this, true);
+        startForeground(1, n);
 
         Client.loadMonitor(this);
         wm = getSystemService(WindowManager.class);
@@ -456,12 +444,6 @@ public class FloatingService extends Service {
         return r;
     }
 
-    private void styleMic(TextView t, boolean on) {
-        t.setText(on ? "🎙" : "🔇");
-        t.setBackground(Ui.round(on ? Ui.GREEN : 0xFF3A4165, this, 100));
-        t.setAlpha(on ? 1f : 0.8f);
-    }
-
     private View header() {
         LinearLayout h = new LinearLayout(this);
         h.setOrientation(LinearLayout.HORIZONTAL);
@@ -474,18 +456,6 @@ public class FloatingService extends Service {
         h.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
 
         int s = Ui.dp(this, 28);
-        // Green = your own microphone goes to the game, grey = muted (tap to switch).
-        final TextView mic = Ui.pill(this, "🎙", Ui.GREEN, 0xFF06210F, 13);
-        styleMic(mic, SoundStore.getMicOn(this));
-        mic.setOnClickListener(v -> {
-            boolean on = !SoundStore.getMicOn(this);
-            Client.setMic(this, on);
-            styleMic(mic, on);
-        });
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(s, s);
-        mlp.rightMargin = Ui.dp(this, 6);
-        h.addView(mic, mlp);
-
         TextView stop = Ui.pill(this, "■", Ui.RED, 0xFFFFFFFF, 12);
         stop.setOnClickListener(v -> Client.stop());
         h.addView(stop, new LinearLayout.LayoutParams(s, s));
@@ -836,8 +806,6 @@ public class FloatingService extends Service {
     }
 
     @Override public void onDestroy() {
-        running = false;
-        MicRelay.stop();
         MusicPlayer.removeListener(musicL);
         try { if (panel != null) wm.removeView(panel); } catch (Throwable ignored) {}
         try { if (bubble != null) wm.removeView(bubble); } catch (Throwable ignored) {}
