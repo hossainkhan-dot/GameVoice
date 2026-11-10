@@ -23,6 +23,13 @@
             android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="soundboard overlay"/>
         </service>
+        <!-- Gaming Voice packs: pack manager screen + its own floating button (the older mic bubble is unchanged) -->
+        <activity android:name=".PackActivity" android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"/>
+        <service android:name=".GamingVoiceService" android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="gaming voice pack overlay"/>
+        </service>
         <provider android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
             android:multiprocess="false" android:enabled="true" android:exported="true"

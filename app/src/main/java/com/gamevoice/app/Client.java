@@ -53,8 +53,13 @@ public class Client {
 
     /** Sends the sound to everyone (mic injection) and, if enabled, also to your own speaker. */
     public static String play(Context ctx, File f) {
+        return play(ctx, f, SoundStore.sendVolume(ctx, SoundStore.folderOf(ctx, f)));
+    }
+
+    /** Same, but with an explicit "other side" volume (0..100 %) - used by the Gaming Voice packs. */
+    public static String play(Context ctx, File f, int sendPct) {
         IUserService s = svc;
-        if (Boolean.FALSE.equals(injectOk)) return playSpeaker(ctx, f);
+        if (Boolean.FALSE.equals(injectOk)) return playSpeaker(ctx, f, sendPct);
         if (s == null) return "Shizuku সংযুক্ত নয়";
         // Why did the previous sound fail? (decode / mic-injection errors happen on a background thread)
         try {
@@ -66,7 +71,7 @@ public class Client {
         ParcelFileDescriptor pfd = null;
         try {
             pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
-            r = s.play(pfd, SoundStore.sendVolume(ctx, SoundStore.folderOf(ctx, f)));
+            r = s.play(pfd, sendPct);
         } catch (Throwable e) { return "ERR: " + e; }
         finally {
             // The remote side got its own duplicate; close ours so descriptors don't leak on every tap.
@@ -82,8 +87,7 @@ public class Client {
      * play the sound out loud at the folder's "other side" volume so the microphone picks it up.
      * Quality is lower and voice-chat echo cancellation may reduce it.
      */
-    private static String playSpeaker(Context ctx, File f) {
-        int pct = SoundStore.sendVolume(ctx, SoundStore.folderOf(ctx, f));
+    private static String playSpeaker(Context ctx, File f, int pct) {
         if (!warned) {
             warned = true;
             android.widget.Toast.makeText(ctx,

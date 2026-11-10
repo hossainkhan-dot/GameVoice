@@ -112,6 +112,22 @@ public class MainActivity extends Activity {
         offp.leftMargin = dp(8);
         onoff.addView(off, offp);
 
+        // Gaming Voice packs: own manager screen + own floating button
+        root.addView(section("🎮 গেমিং ভয়েস প্যাক"));
+        root.addView(step("▶", "ভয়েস প্যাক ম্যানেজ করুন", v -> startActivity(new Intent(this, PackActivity.class))));
+        LinearLayout gonoff = new LinearLayout(this);
+        gonoff.setOrientation(LinearLayout.HORIZONTAL);
+        root.addView(gonoff, new LinearLayout.LayoutParams(-1, -2));
+        TextView gon = bigBtn("🎮  গেমিং ভয়েস চালু", Ui.ACCENT, v -> {
+            if (!Settings.canDrawOverlays(this)) { toast("আগে ওভারলে পারমিশন দাও"); return; }
+            startForegroundService(new Intent(this, GamingVoiceService.class));
+        });
+        TextView goff = bigBtn("বন্ধ", 0xFF2A3050, v -> stopService(new Intent(this, GamingVoiceService.class)));
+        gonoff.addView(gon, new LinearLayout.LayoutParams(0, dp(48), 3f));
+        LinearLayout.LayoutParams goffp = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        goffp.leftMargin = dp(8);
+        gonoff.addView(goff, goffp);
+
         // self monitor
         root.addView(section("নিজে শুনুন (আপনার স্পিকারে)"));
         TextView mh = text("ভয়েস বাজালে অন্যরা তো শুনবেই; স্লাইডার টেনে ১–১০০% ঠিক করুন, একদম বামে নিলে বন্ধ।", 12, Ui.MUTED, false);
