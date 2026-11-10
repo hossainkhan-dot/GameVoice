@@ -31,20 +31,27 @@ import rikka.shizuku.Shizuku;
 /**
  * Floating Gaming Voice button (separate from the older mic bubble, which is unchanged).
  *
- * Gestures on the button:
- *  - TAP                      : opens the panel (pack list on top, the active pack's voice commands below).
- *  - DRAG from the button     : opens the pack list next to it; the pack you release your finger on becomes ACTIVE.
- *  - HOLD 2 seconds, then drag: moves the button anywhere on the screen (position is remembered).
+ * Gestures on the button (the button is the centre of the "flower"):
+ *  - PRESS and slide            : the voice commands of the active pack open as petals around the button.
+ *                                 Slide onto a petal and let go: that voice plays. Let go in the middle: nothing.
+ *  - quick TAP                  : opens the panel (pack list + all commands, pin, settings).
+ *  - HOLD still for 2.5 seconds : the button can be moved anywhere on the screen (position is remembered).
+ *  - petals "⋯" / "🔁"          : keep the finger on them for a moment to flip the page / switch the active pack.
  *
- * The overlay windows are only as big as the button / panel, and let every touch outside them through to the
- * game, so the game's own controls keep working.
+ * The overlay windows are only as big as the button / flower / panel, the flower does not take touches at all and
+ * the panel lets every touch outside it through, so the game's own controls keep working.
  */
 public class GamingVoiceService extends Service {
-    /** How long the button must be held before it can be moved. */
-    private static final long HOLD_MS = 2000;
+    /** Holding the button still this long (without sliding to a petal) lets you move it. */
+    private static final long HOLD_MS = 2500;
+    /** Pressing longer than this (a tap is shorter) opens the flower even before the finger slides. */
+    private static final long RADIAL_MS = 220;
+    /** Keeping the finger on a "⋯" / "🔁" petal this long flips the page / switches the pack. */
+    private static final long DWELL_MS = 700;
+    private static final int VOICES_PER_PAGE = 8;
     private static final int COLS = 4;
 
-    private static final int IDLE = 0, PICK = 1, MOVE = 2;
+    private static final int IDLE = 0, RADIAL = 1, MOVE = 2;
 
     private WindowManager wm;
     private TextView bubble;
@@ -61,15 +68,17 @@ public class GamingVoiceService extends Service {
     private float fx, fy;
     private int slide;
 
-    // drag-to-pick list
-    private LinearLayout picker;
-    private final List<TextView> pickCells = new ArrayList<>();
-    private final List<String> pickIds = new ArrayList<>();
-    private int hover = -1;
+    // the flower
+    private RadialView radial;
+    private float rx0, ry0;                       // screen position of the flower window
+    private PackStore.Pack radialPack;
+    private int page, hover = -1;
 
     private int state = IDLE;
     private final Runnable holdDone = this::enterMoveMode;
-    private float lastRawX, lastRawY;
+    private final Runnable radialRun = () -> { if (state == IDLE) showRadial(); };
+    private final Runnable dwellRun = this::dwellAdvance;
+    private float lastRawX, lastRawY, downX, downY;
     private int moveSx, moveSy;
     private float moveTx, moveTy;
 
@@ -133,9 +142,11 @@ public class GamingVoiceService extends Service {
         switch (e.getAction()) {
             case MotionEvent.ACTION_DOWN:
                 state = IDLE;
-                moveTx = e.getRawX();
-                moveTy = e.getRawY();
+                downX = moveTx = e.getRawX();
+                downY = moveTy = e.getRawY();
                 h.removeCallbacks(holdDone);
+                h.removeCallbacks(radialRun);
+                h.postDelayed(radialRun, RADIAL_MS);
                 h.postDelayed(holdDone, HOLD_MS);
                 return true;
 
@@ -145,32 +156,30 @@ public class GamingVoiceService extends Service {
                     bp.x = clamp(moveSx + (int) (e.getRawX() - moveTx), 0, Math.max(0, sw - bsz));
                     bp.y = clamp(moveSy + (int) (e.getRawY() - moveTy), 0, Math.max(0, sh - bsz));
                     try { wm.updateViewLayout(bubble, bp); } catch (Throwable ignored) {}
-                } else if (state == IDLE) {
-                    float dx = e.getRawX() - moveTx, dy = e.getRawY() - moveTy;
-                    if (Math.abs(dx) > slop || Math.abs(dy) > slop) {
-                        // finger left the button before the hold finished: this is a "pick a pack" drag
-                        h.removeCallbacks(holdDone);
-                        state = PICK;
-                        showPicker();
-                        updateBubbleFace();
-                    }
+                    return true;
                 }
-                if (state == PICK) updateHover(e.getRawX(), e.getRawY());
+                if (state == IDLE && (Math.abs(e.getRawX() - downX) > slop || Math.abs(e.getRawY() - downY) > slop)) {
+                    showRadial();   // sliding out of the button opens the flower at once
+                }
+                if (state == RADIAL) updateHover(e.getRawX(), e.getRawY());
                 return true;
             }
 
             case MotionEvent.ACTION_UP:
                 h.removeCallbacks(holdDone);
+                h.removeCallbacks(radialRun);
                 if (state == MOVE) {
                     savePos();
-                } else if (state == PICK) {
-                    String id = hover >= 0 && hover < pickIds.size() ? pickIds.get(hover) : null;
-                    hidePicker();
-                    if (id != null && !id.isEmpty()) {
-                        PackStore.setActive(this, id);
-                        openPanel();
+                } else if (state == RADIAL) {
+                    updateHover(e.getRawX(), e.getRawY());
+                    RadialView.Item it = radial == null ? null : radial.item(hover);
+                    PackStore.Pack pk = radialPack;
+                    hideRadial();
+                    if (it != null && it.kind == RadialView.VOICE && pk != null) {
+                        bubble.performHapticFeedback(HapticFeedbackConstants.CONFIRM);
+                        playSlot(pk, (PackStore.Slot) it.tag);
                     }
-                } else { // plain tap
+                } else { // quick tap
                     if (Math.abs(outsideAt - e.getDownTime()) < 350) { /* this tap just closed the panel */ }
                     else if (open) closePanel();
                     else openPanel();
@@ -182,8 +191,9 @@ public class GamingVoiceService extends Service {
 
             case MotionEvent.ACTION_CANCEL:
                 h.removeCallbacks(holdDone);
+                h.removeCallbacks(radialRun);
                 if (state == MOVE) savePos();
-                hidePicker();
+                hideRadial();
                 state = IDLE;
                 bubble.animate().scaleX(1f).scaleY(1f).setDuration(120).start();
                 updateBubbleFace();
@@ -192,9 +202,12 @@ public class GamingVoiceService extends Service {
         return false;
     }
 
-    /** Held long enough: from now on the finger moves the button. */
+    /** Held still long enough: from now on the finger moves the button. */
     private void enterMoveMode() {
-        if (state != IDLE) return;
+        if (state == MOVE) return;
+        // only when the finger really stayed on the button (not while it is choosing a petal)
+        if (Math.hypot(lastRawX - downX, lastRawY - downY) > Ui.dp(this, 20)) return;
+        hideRadial();
         state = MOVE;
         if (open) closePanel();
         moveSx = bp.x;
@@ -204,6 +217,13 @@ public class GamingVoiceService extends Service {
         bubble.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
         bubble.animate().scaleX(1.25f).scaleY(1.25f).setDuration(120).start();
         updateBubbleFace();
+    }
+
+    private void playSlot(PackStore.Pack pk, PackStore.Slot slot) {
+        File f = PackStore.fileOf(this, pk, slot);
+        if (f == null) { Toast.makeText(this, "ফাইলটি পাওয়া যায়নি", Toast.LENGTH_SHORT).show(); return; }
+        String r = Client.play(this, f, pk.vol);
+        if (!"ok".equals(r)) Toast.makeText(this, r, Toast.LENGTH_LONG).show();
     }
 
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(v, hi)); }
@@ -228,116 +248,124 @@ public class GamingVoiceService extends Service {
     @Override public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
         // Screen rotated (games are often landscape): keep the button at the same relative spot.
-        hidePicker();
+        hideRadial();
         if (open) closePanel();
         readScreen();
         applyBubblePos();
         try { wm.updateViewLayout(bubble, bp); } catch (Throwable ignored) {}
     }
 
-    // ------------------------------------------------------ drag-to-pick list
+    // -------------------------------------------------------------- the flower
 
-    private void showPicker() {
+    private void showRadial() {
+        if (state != IDLE) return;
+        state = RADIAL;
         if (open) closePanel();
-        hidePicker();
         readScreen();
-        List<PackStore.Pack> packs = PackStore.list(this);
-        String activeId = PackStore.activeId(this);
-
-        int rowH = Ui.dp(this, 38), margin = Ui.dp(this, 16);
-        int maxRows = Math.max(3, (sh - 2 * margin - Ui.dp(this, 16)) / rowH);
-        int n = Math.max(1, packs.size());
-        int cols = (int) Math.ceil(n / (double) maxRows);
-        int colW = Math.min(Ui.dp(this, 150), Math.max(Ui.dp(this, 90), (sw - 2 * margin) / Math.max(1, cols)));
-        cols = Math.max(1, Math.min(cols, (sw - 2 * margin) / colW));
-        int rows = Math.min(maxRows, (int) Math.ceil(n / (double) cols));
-
-        picker = new LinearLayout(this);
-        picker.setOrientation(LinearLayout.HORIZONTAL);
-        picker.setBackground(Ui.round(Ui.PANEL, this, 16));
-        picker.setPadding(Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6));
-        picker.setElevation(Ui.dp(this, 8));
-        pickCells.clear();
-        pickIds.clear();
+        page = 0;
         hover = -1;
+        radial = new RadialView(this);
+        radial.fit(sw, sh);
+        buildRadial();
 
-        if (packs.isEmpty()) {
-            TextView t = pickCell("কোনো প্যাক নেই", false);
-            picker.addView(t, new LinearLayout.LayoutParams(colW, rowH));
-        } else {
-            int idx = 0;
-            for (int c = 0; c < cols; c++) {
-                LinearLayout col = new LinearLayout(this);
-                col.setOrientation(LinearLayout.VERTICAL);
-                for (int r = 0; r < rows && idx < packs.size(); r++, idx++) {
-                    PackStore.Pack p = packs.get(idx);
-                    boolean act = p.id.equals(activeId);
-                    TextView t = pickCell(p.emoji + " " + p.name + (act ? "  ●" : ""), act);
-                    col.addView(t, new LinearLayout.LayoutParams(colW, rowH));
-                    pickCells.add(t);
-                    pickIds.add(p.id);
-                }
-                picker.addView(col, new LinearLayout.LayoutParams(-2, -2));
-            }
-        }
+        // centre of the flower = centre of the button, pushed inwards when it would leave the screen
+        float cw = radial.centerX(), ch = radial.centerY();
+        float cxs = clampF(bp.x + bsz / 2f, cw, sw - (radial.viewW() - cw));
+        float cys = clampF(bp.y + bsz / 2f, ch, sh - (radial.viewH() - ch));
+        rx0 = cxs - cw;
+        ry0 = cys - ch;
 
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(radial.viewW(), radial.viewH(),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        picker.measure(View.MeasureSpec.makeMeasureSpec(sw, View.MeasureSpec.AT_MOST),
-                View.MeasureSpec.makeMeasureSpec(sh, View.MeasureSpec.AT_MOST));
-        int w = picker.getMeasuredWidth(), ph = picker.getMeasuredHeight(), gap = Ui.dp(this, 8);
-        boolean right = bp.x + bsz + gap + w <= sw;
-        lp.x = right ? bp.x + bsz + gap : Math.max(0, bp.x - gap - w);
-        lp.y = clamp(bp.y + bsz / 2 - ph / 2, 0, Math.max(0, sh - ph));
-        try { wm.addView(picker, lp); } catch (Throwable e) { picker = null; }
+        lp.x = Math.round(rx0);
+        lp.y = Math.round(ry0);
+        try { wm.addView(radial, lp); } catch (Throwable t) { radial = null; state = IDLE; return; }
+        bubble.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+        updateBubbleFace();
     }
 
-    private TextView pickCell(String text, boolean active) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextSize(13);
-        t.setTypeface(active ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-        t.setTextColor(Ui.TEXT);
-        t.setSingleLine(true);
-        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        t.setGravity(Gravity.CENTER_VERTICAL);
-        t.setPadding(Ui.dp(this, 10), 0, Ui.dp(this, 10), 0);
-        return t;
-    }
+    private static float clampF(float v, float lo, float hi) { return Math.max(lo, Math.min(v, Math.max(lo, hi))); }
 
-    /** Highlights the pack under the finger. */
-    private void updateHover(float rx, float ry) {
-        int found = -1;
-        int[] loc = new int[2];
-        for (int i = 0; i < pickCells.size(); i++) {
-            TextView t = pickCells.get(i);
-            t.getLocationOnScreen(loc);
-            if (rx >= loc[0] && rx < loc[0] + t.getWidth() && ry >= loc[1] && ry < loc[1] + t.getHeight()) {
-                found = i;
-                break;
+    /** (Re)builds the petals: the voices of the active pack, plus "⋯" (more pages) and "🔁" (next pack). */
+    private void buildRadial() {
+        PackStore.Pack act = PackStore.active(this);
+        radialPack = act;
+        List<PackStore.Slot> voices = new ArrayList<>();
+        List<Integer> idx = new ArrayList<>();
+        if (act != null) {
+            for (int i = 0; i < act.slots.size(); i++) {
+                if (PackStore.fileOf(this, act, act.slots.get(i)) != null) { voices.add(act.slots.get(i)); idx.add(i); }
             }
         }
-        if (found == hover) return;
-        if (hover >= 0 && hover < pickCells.size()) pickCells.get(hover).setBackground(null);
-        hover = found;
+        int total = voices.size();
+        int per = Math.min(VOICES_PER_PAGE, total);
+        int pages = per == 0 ? 1 : (int) Math.ceil(total / (double) per);
+        if (page >= pages) page = 0;
+        boolean pageCtl = pages > 1, packCtl = PackStore.list(this).size() > 1;
+
+        List<RadialView.Item> slots = new ArrayList<>();
+        for (int i = 0; i < per; i++) {
+            int k = page * per + i;
+            if (k < total) {
+                PackStore.Slot sl = voices.get(k);
+                String label = PackStore.slotLabel(sl, idx.get(k));
+                slots.add(new RadialView.Item(RadialView.VOICE, Ui.glyph(label), label, Ui.colorFor(sl.id), sl));
+            } else slots.add(null);   // blank petal on the last page keeps "⋯" / "🔁" where they were
+        }
+        if (pageCtl) slots.add(new RadialView.Item(RadialView.PAGE, "⋯", "পাতা " + (page + 1) + "/" + pages, 0xFF3A4170, null));
+        if (packCtl) slots.add(new RadialView.Item(RadialView.PACK, "🔁", "প্যাক", 0xFF3A4170, null));
+
+        String cap = act == null ? "কোনো প্যাক নেই (চাপ দিয়ে ⚙)"
+                : act.emoji + " " + act.name + (total == 0 ? " — খালি" : "");
+        radial.setData(act == null ? PackStore.DEFAULT_EMOJI : act.emoji, cap, slots);
+    }
+
+    /** Highlights the petal under the finger; "⋯" / "🔁" react when the finger rests on them. */
+    private void updateHover(float rawX, float rawY) {
+        if (radial == null) return;
+        int idx = radial.indexAt(rawX - rx0, rawY - ry0);
+        if (idx == hover) return;
+        hover = idx;
+        radial.setHover(hover);
+        h.removeCallbacks(dwellRun);
         if (hover >= 0) {
-            pickCells.get(hover).setBackground(Ui.round(Ui.ACCENT, this, 12));
             bubble.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+            RadialView.Item it = radial.item(hover);
+            if (it != null && it.kind != RadialView.VOICE) h.postDelayed(dwellRun, DWELL_MS);
         }
     }
 
-    private void hidePicker() {
-        if (picker != null) {
-            try { wm.removeView(picker); } catch (Throwable ignored) {}
-            picker = null;
+    private void dwellAdvance() {
+        if (radial == null || state != RADIAL) return;
+        RadialView.Item it = radial.item(hover);
+        if (it == null) return;
+        if (it.kind == RadialView.PAGE) {
+            page++;
+        } else if (it.kind == RadialView.PACK) {
+            List<PackStore.Pack> all = PackStore.list(this);
+            if (all.isEmpty()) return;
+            String cur = PackStore.active(this) == null ? "" : PackStore.active(this).id;
+            int at = 0;
+            for (int i = 0; i < all.size(); i++) if (all.get(i).id.equals(cur)) at = i;
+            PackStore.setActive(this, all.get((at + 1) % all.size()).id);
+            page = 0;
+            updateBubbleFace();
+        } else return;
+        bubble.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+        buildRadial();
+        h.postDelayed(dwellRun, DWELL_MS * 2);   // keep flipping while the finger stays, a bit slower
+    }
+
+    private void hideRadial() {
+        h.removeCallbacks(dwellRun);
+        if (radial != null) {
+            try { wm.removeView(radial); } catch (Throwable ignored) {}
+            radial = null;
         }
-        pickCells.clear();
-        pickIds.clear();
         hover = -1;
     }
 
@@ -611,17 +639,15 @@ public class GamingVoiceService extends Service {
         cell.setOnClickListener(v -> {
             circle.animate().scaleX(1.18f).scaleY(1.18f).setDuration(90)
                     .withEndAction(() -> circle.animate().scaleX(1f).scaleY(1f).setDuration(120).start()).start();
-            File f = PackStore.fileOf(this, pack, slot);
-            if (f == null) { Toast.makeText(this, "ফাইলটি পাওয়া যায়নি", Toast.LENGTH_SHORT).show(); return; }
-            String r = Client.play(this, f, pack.vol);
-            if (!"ok".equals(r)) Toast.makeText(this, r, Toast.LENGTH_LONG).show();
+            playSlot(pack, slot);
         });
         return cell;
     }
 
     @Override public void onDestroy() {
         h.removeCallbacks(holdDone);
-        hidePicker();
+        h.removeCallbacks(radialRun);
+        hideRadial();
         try { if (panel != null) wm.removeView(panel); } catch (Throwable ignored) {}
         try { if (bubble != null) wm.removeView(bubble); } catch (Throwable ignored) {}
         super.onDestroy();
