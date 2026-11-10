@@ -240,7 +240,7 @@ public class GamingVoiceService extends Service {
         armed = false;
         state = stickyMode ? IDLE : SLIDE;
 
-        int d = Math.max(Ui.dp(this, 160), Math.min(Ui.dp(this, 380), Math.min(sw, sh) - Ui.dp(this, 12)));
+        int d = Math.max(Ui.dp(this, 150), Math.min(Ui.dp(this, 190), (Math.min(sw, sh) - Ui.dp(this, 12)) / 2));   // half the old size
         wheel = new WheelView(this);
         wheel.setSlots(WheelStore.labels(this, count, paths));
         if (stickyMode) wheel.setHub("■", "সব বন্ধ", Ui.RED);
