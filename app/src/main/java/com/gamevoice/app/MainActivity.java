@@ -113,8 +113,8 @@ public class MainActivity extends Activity {
         onoff.addView(off, offp);
 
         // Gaming Voice packs: own manager screen + own floating button
-        root.addView(section("🎮 গেমিং ভয়েস প্যাক"));
-        root.addView(step("▶", "ভয়েস প্যাক ম্যানেজ করুন", v -> startActivity(new Intent(this, PackActivity.class))));
+        root.addView(section("🎮 কুইক ভয়েস চাকা"));
+        root.addView(step("▶", "চাকা সাজান (সেটিংস)", v -> startActivity(new Intent(this, WheelActivity.class))));
         LinearLayout gonoff = new LinearLayout(this);
         gonoff.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(gonoff, new LinearLayout.LayoutParams(-1, -2));
